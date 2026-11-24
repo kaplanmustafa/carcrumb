@@ -85,6 +85,7 @@ Algılama ve veri yazımı tamamen Swift'te; React Native yalnızca arayüz. Uyg
 | Karar | Seçim | Gerekçe |
 | --- | --- | --- |
 | Arayüz | React Native + Expo (dev client) + TypeScript | Windows'ta geliştirme; EAS ile bulutta iOS derlemesi |
+| Tasarım sistemi | `@expo/ui` (SwiftUI bileşenleri) + kendi token'larımız (renk, tipografi, boşluk, köşe) ve küçük bir CarCrumb bileşen seti | iOS'a yerli görünüm; Dynamic Type, karanlık mod ve erişilebilirlik sistemden gelir. Ekranlar doğrudan stil değeri yazmaz, token ve bileşen kullanır (24 Kasım 2026) |
 | Native modül | Swift, Expo Modules API | Core Location, Core Motion, AVAudioSession, CMAltimeter erişimi |
 | Minimum iOS | 18 | `CLServiceSession` ve teşhis bayrakları; iOS 17 desteği bakım yükünü artırır |
 | Veritabanı | SQLite (GRDB, WAL), **tek yazıcı Swift** | İki yazıcı arka planda bozulma riski; JS native modül üzerinden okur |

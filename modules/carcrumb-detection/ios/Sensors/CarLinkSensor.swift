@@ -11,7 +11,8 @@ import Foundation
 /// reading `currentRoute` and receiving route-change notifications does not need it, and
 /// touching the session would interrupt the user's music.
 final class CarLinkSensor: @unchecked Sendable {
-  /// Sent only when the connected value changes (and once at start).
+  /// Sent only when the connected value changes (and once at start). The engine additionally
+  /// re-reads the level with `refresh()` after a wake / GPS start (edge-only is not enough).
   var onEvent: (@Sendable (DetectionEvent) -> Void)?
 
   private var observer: NSObjectProtocol?
@@ -44,14 +45,27 @@ final class CarLinkSensor: @unchecked Sendable {
     return lastConnected ?? false
   }
 
+  /// Route-change path. The route is read and the event emitted inside the lock, so two
+  /// notifications racing on different threads cannot store / emit an older route last.
+  /// `onEvent` only enqueues onto the engine queue and never calls back into this sensor.
   private func evaluate() {
+    lock.lock(); defer { lock.unlock() }
     let snapshot = AudioRouteSnapshot(route: AVAudioSession.sharedInstance().currentRoute)
-    lock.lock()
     lastSnapshot = snapshot
     let changed = lastConnected != snapshot.carAudio
     lastConnected = snapshot.carAudio
-    lock.unlock()
     if changed { onEvent?(.carLink(connected: snapshot.carAudio)) }
+  }
+
+  /// Re-reads the route and returns the current level without emitting an event; the caller
+  /// (engine, on its queue) feeds the level itself. Updating `lastConnected` here keeps the
+  /// next route-change notification from re-sending the same value.
+  func refresh() -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    let snapshot = AudioRouteSnapshot(route: AVAudioSession.sharedInstance().currentRoute)
+    lastSnapshot = snapshot
+    lastConnected = snapshot.carAudio
+    return snapshot.carAudio
   }
 }
 

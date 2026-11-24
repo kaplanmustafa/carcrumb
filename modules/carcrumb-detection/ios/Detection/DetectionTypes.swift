@@ -58,28 +58,99 @@ public struct DetectionConfig: Equatable, Sendable {
   public var drivingSpeed: Double = 5.0
   /// How long MAYBE_DRIVING may wait for confirmation before falling back to IDLE.
   public var maybeDrivingTimeout: TimeInterval = 5 * 60
-  /// Walking distance from the stop point that confirms parking (30–50 m band).
+  /// Walking distance from the stop point that confirms parking (30–50 m band). Compared
+  /// against `distance - sample accuracy` (DECISIONS.md, "Park onayı").
   public var parkConfirmDistance: Double = 40
+  /// Upper bound of walking speed (m/s) for a sample to count as "walked away". Above it the
+  /// phone is probably still in a slowly moving car.
+  public var maxWalkingSpeed: Double = 2.5
   /// Ring buffer length used to pick the park point.
   public var bufferWindow: TimeInterval = 60
   /// Geofence radius around the park point; next trip's wake-up trigger.
   public var geofenceRadius: Double = 150
   /// Accuracy (m) at or below which a park point can be high confidence.
   public var goodAccuracy: Double = 20
+  /// A park candidate older than this at the walking start means GPS was lost before the car
+  /// stopped (indoor car park ramps): the point is kept but confidence is low.
+  public var maxCandidateAge: TimeInterval = 30
+  /// Karar A: MAYBE_PARKED without confirmation for this long (from the walking start) ends
+  /// the trip: low-confidence park with car link, `uncertain` without.
+  public var maybeParkedTimeout: TimeInterval = 10 * 60
+  /// Karar B: DRIVING without movement for this long AND without a connected car link ends
+  /// the trip at the stop point (phone left in the car).
+  public var drivingStationaryTimeout: TimeInterval = 15 * 60
+  /// GPS speed (m/s) at or above which a DRIVING sample counts as movement for Karar B.
+  public var movingSpeed: Double = 1.0
 
   public init() {}
 }
 
-public struct Trip: Equatable, Codable, Sendable {
+public struct Trip: Equatable, Sendable {
   public var startedAt: Date
+  /// Car link seen at any time during the trip (decides confirmed vs. uncertain).
   public var hadCarLink: Bool
   /// Last `bufferWindow` seconds of location samples, oldest first.
   public var buffer: [LocationSample]
+  /// Current car link level (not only "ever seen"). Park confirmation is blocked while it is
+  /// connected; its loss is required for the DRIVING stationary timeout.
+  public var carLinkConnected: Bool
+  /// Last evidence of the car moving (automotive activity or GPS speed >= `movingSpeed`).
+  public var lastMovingAt: Date
+  /// Latest activity reported by Core Motion during the trip (nil = none yet).
+  public var lastActivity: MotionActivity?
+  /// Newest good-accuracy sample that already fell out of `buffer`. Lets the park point be
+  /// chosen when the walking report arrives late or GPS was lost before the stop.
+  public var anchor: LocationSample?
 
-  public init(startedAt: Date, hadCarLink: Bool, buffer: [LocationSample] = []) {
+  public init(
+    startedAt: Date,
+    hadCarLink: Bool,
+    buffer: [LocationSample] = [],
+    carLinkConnected: Bool? = nil,
+    lastMovingAt: Date? = nil,
+    lastActivity: MotionActivity? = nil,
+    anchor: LocationSample? = nil
+  ) {
     self.startedAt = startedAt
     self.hadCarLink = hadCarLink
     self.buffer = buffer
+    self.carLinkConnected = carLinkConnected ?? hadCarLink
+    self.lastMovingAt = lastMovingAt ?? startedAt
+    self.lastActivity = lastActivity
+    self.anchor = anchor
+  }
+}
+
+extension Trip: Codable {
+  private enum CodingKeys: String, CodingKey {
+    case startedAt, hadCarLink, buffer, carLinkConnected, lastMovingAt, lastActivity, anchor
+  }
+
+  /// Fields added after the first version are optional on decode, so a `state.json` written
+  /// by an older build still restores.
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    let startedAt = try c.decode(Date.self, forKey: .startedAt)
+    let buffer = try c.decodeIfPresent([LocationSample].self, forKey: .buffer) ?? []
+    self.init(
+      startedAt: startedAt,
+      hadCarLink: try c.decode(Bool.self, forKey: .hadCarLink),
+      buffer: buffer,
+      carLinkConnected: try c.decodeIfPresent(Bool.self, forKey: .carLinkConnected),
+      lastMovingAt: try c.decodeIfPresent(Date.self, forKey: .lastMovingAt) ?? buffer.last?.timestamp,
+      lastActivity: try c.decodeIfPresent(MotionActivity.self, forKey: .lastActivity),
+      anchor: try c.decodeIfPresent(LocationSample.self, forKey: .anchor))
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(startedAt, forKey: .startedAt)
+    try c.encode(hadCarLink, forKey: .hadCarLink)
+    try c.encode(buffer, forKey: .buffer)
+    try c.encode(carLinkConnected, forKey: .carLinkConnected)
+    try c.encode(lastMovingAt, forKey: .lastMovingAt)
+    try c.encodeIfPresent(lastActivity, forKey: .lastActivity)
+    try c.encodeIfPresent(anchor, forKey: .anchor)
   }
 }
 
@@ -100,7 +171,9 @@ public enum DetectionState: Equatable, Codable, Sendable {
   case idle
   case maybeDriving(since: Date, carLink: Bool)
   case driving(Trip)
-  /// Walking started; `candidate` is the buffered location at the automotive → walking transition.
+  /// Walking started; `candidate` is the buffered location at the automotive → walking
+  /// transition; `walkingSince` is the walking start reported by Core Motion (the event time
+  /// when the report carries no start date).
   case maybeParked(trip: Trip, candidate: LocationSample, walkingSince: Date)
   case parked(ParkPoint)
 
@@ -120,7 +193,9 @@ public enum DetectionState: Equatable, Codable, Sendable {
 /// new sensor fields must be added as optional keys here AND in the trace docs.
 public enum DetectionEvent: Equatable, Sendable {
   case wake(WakeSource)
-  case motion(MotionActivity)
+  /// `startedAt` = `CMMotionActivity.startDate`: when the activity really began. Core Motion
+  /// often reports walking tens of seconds late. nil in traces recorded before the field existed.
+  case motion(MotionActivity, startedAt: Date? = nil)
   case location(LocationSample)
   case carLink(connected: Bool)
   /// Periodic tick so time-based transitions happen without new sensor data.
@@ -135,5 +210,7 @@ public enum Effect: Equatable, Codable, Sendable {
   /// Storage must not overwrite a high-confidence park with a low one and keeps the last 3.
   case saveParking(ParkPoint)
   case setGeofence(center: LocationSample, radius: Double)
+  /// Never emitted by the reducer (Karar D: the park geofence changes only with a new park).
+  /// Kept for the "delete history" flow.
   case clearGeofence
 }

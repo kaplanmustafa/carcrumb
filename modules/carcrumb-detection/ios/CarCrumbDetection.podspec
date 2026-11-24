@@ -26,7 +26,13 @@ Pod::Spec.new do |s|
     t.source_files = 'Tests/**/*.swift'
   end
 
+  # DEBUG gates the sensor trace recorder (raw coordinates on disk). Set explicitly per
+  # configuration instead of relying on the CocoaPods project default: Debug gets DEBUG,
+  # Release gets no condition at all, so a release build can never record traces.
+  # Verify on device via getDiagnostics().engine.traceRecording (false in release).
   s.pod_target_xcconfig = {
-    'DEFINES_MODULE' => 'YES'
+    'DEFINES_MODULE' => 'YES',
+    'SWIFT_ACTIVE_COMPILATION_CONDITIONS[config=Debug]' => '$(inherited) DEBUG',
+    'SWIFT_ACTIVE_COMPILATION_CONDITIONS[config=Release]' => ''
   }
 end

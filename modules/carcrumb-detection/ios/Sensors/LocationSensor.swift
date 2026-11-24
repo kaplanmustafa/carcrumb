@@ -27,8 +27,15 @@ final class LocationSensor: NSObject {
   private let manager = CLLocationManager()
 
   // GPS (driving) resources. Non-nil only between startGPS and stopGPS.
+  /// Non-nil only while a liveUpdates loop is actually running (reset when it ends/fails).
   private var liveTask: Task<Void, Never>?
   private var backgroundSession: CLBackgroundActivitySession?
+  /// The state machine wants GPS (between `.startGPS` and `.stopGPS`).
+  private var gpsWanted = false
+  /// Identifies the current loop so a stale loop ending cannot clear a newer one.
+  private var liveGeneration = 0
+  private var restartTask: Task<Void, Never>?
+  private var restartAttempts = 0
 
   // Long-lived service session declaring our authorization intent; diagnostics are read from it.
   private var serviceSession: CLServiceSession?
@@ -45,6 +52,8 @@ final class LocationSensor: NSObject {
   private static let parkConditionID = "lastPark"
   private var monitor: CLMonitor?
   private var monitorTask: Task<Void, Never>?
+  /// Tail of the serialized geofence operations (set/clear run strictly in effect order).
+  private var geofenceChain: Task<Void, Never>?
   private(set) var geofenceActive = false
 
   private var authorizationContinuations: [CheckedContinuation<CLAuthorizationStatus, Never>] = []
@@ -110,9 +119,11 @@ final class LocationSensor: NSObject {
 
   /// Always upgrade. iOS shows the upgrade prompt at most once; if it is not shown, the
   /// delegate is not called, so we also resolve after a timeout with the current status.
+  /// Only from When In Use (DECISIONS "İzin akışı": While Using first, Always later with
+  /// context). While `.notDetermined` no prompt is shown; the current status is returned.
   func requestAlways() async -> CLAuthorizationStatus {
     let status = manager.authorizationStatus
-    guard status == .notDetermined || status == .authorizedWhenInUse else { return status }
+    guard status == .authorizedWhenInUse else { return status }
     return await withCheckedContinuation { cont in
       authorizationContinuations.append(cont)
       manager.requestAlwaysAuthorization()
@@ -170,18 +181,31 @@ final class LocationSensor: NSObject {
 
   // MARK: GPS (driving only)
 
+  /// A liveUpdates loop is running right now.
   var isGPSActive: Bool { liveTask != nil }
+  /// The state machine wants GPS; may be true while `isGPSActive` is false (restart pending).
+  var isGPSRequested: Bool { gpsWanted }
 
   /// Effect `.startGPS`. Idempotent.
   func startGPS() {
-    guard liveTask == nil else { return }
+    gpsWanted = true
+    restartAttempts = 0
     // Keeps the app running in the background and shows the blue indicator while driving.
     // NOTE(iOS): Apple documents starting a CLBackgroundActivitySession from the foreground;
     // a session recreated during a background relaunch continues one that existed before.
     // Our trips usually start from a background wake (SLC / geofence). With Always
     // authorization liveUpdates are still delivered in the background; whether the session
     // created here is honoured must be verified on device (see report, field scenarios).
-    backgroundSession = CLBackgroundActivitySession()
+    if backgroundSession == nil { backgroundSession = CLBackgroundActivitySession() }
+    guard liveTask == nil else { return }
+    restartTask?.cancel()
+    restartTask = nil
+    startLiveLoop()
+  }
+
+  private func startLiveLoop() {
+    liveGeneration += 1
+    let generation = liveGeneration
     liveTask = Task { @MainActor [weak self] in
       do {
         for try await update in CLLocationUpdate.liveUpdates(.automotiveNavigation) {
@@ -189,18 +213,43 @@ final class LocationSensor: NSObject {
           guard let self else { break }
           self.lastLiveFlags = LiveUpdateFlags(update)
           if let location = update.location {
+            self.restartAttempts = 0
             self.onEvent?(.location(LocationSample(location)))
           }
         }
       } catch {
-        // Stream failed (e.g. authorization revoked). The engine stays in its state; the
-        // diagnostics expose the reason. stopGPS will clean up.
+        // Stream failed (e.g. authorization revoked); handled below like a normal end.
       }
+      self?.liveLoopEnded(generation: generation)
+    }
+  }
+
+  /// The liveUpdates sequence finished or threw. Clear `liveTask` so `isGPSActive` is
+  /// truthful, and if the state machine still wants GPS, restart after a short backoff
+  /// (2, 4, 8 … max 60 s). A loop ended by stopGPS / a newer loop is ignored (generation).
+  private func liveLoopEnded(generation: Int) {
+    guard generation == liveGeneration else { return }
+    liveTask = nil
+    lastLiveFlags = nil
+    guard gpsWanted else { return }
+    let delay = min(60, 2 << min(restartAttempts, 5)) // 2,4,8,16,32,60
+    restartAttempts += 1
+    restartTask?.cancel()
+    restartTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .seconds(delay))
+      guard let self, !Task.isCancelled, self.gpsWanted, self.liveTask == nil else { return }
+      self.restartTask = nil
+      self.startLiveLoop()
     }
   }
 
   /// Effect `.stopGPS`. Idempotent.
   func stopGPS() {
+    gpsWanted = false
+    liveGeneration += 1 // the cancelled loop's end is now stale
+    restartTask?.cancel()
+    restartTask = nil
+    restartAttempts = 0
     liveTask?.cancel()
     liveTask = nil
     backgroundSession?.invalidate()
@@ -240,23 +289,33 @@ final class LocationSensor: NSObject {
   /// Effect `.setGeofence`. Replaces any previous park condition.
   func setGeofence(center: LocationSample, radius: Double) {
     let coordinate = CLLocationCoordinate2D(latitude: center.latitude, longitude: center.longitude)
-    Task { @MainActor [weak self] in
-      guard let self, let monitor = await self.awaitMonitor() else { return }
+    enqueueGeofenceOperation { [weak self] monitor in
       await monitor.remove(Self.parkConditionID)
       let condition = CLMonitor.CircularGeographicCondition(center: coordinate, radius: radius)
       // We are standing at the car when this is set, so assume "inside"; the next transition
       // we care about is the exit.
       await monitor.add(condition, identifier: Self.parkConditionID, assuming: .satisfied)
-      self.geofenceActive = true
+      self?.geofenceActive = true
     }
   }
 
-  /// Effect `.clearGeofence`.
+  /// Effect `.clearGeofence` (not emitted by the reducer; Karar D. Kept for history deletion).
   func clearGeofence() {
-    Task { @MainActor [weak self] in
-      guard let self, let monitor = await self.awaitMonitor() else { return }
+    enqueueGeofenceOperation { [weak self] monitor in
       await monitor.remove(Self.parkConditionID)
-      self.geofenceActive = false
+      self?.geofenceActive = false
+    }
+  }
+
+  /// Runs geofence operations one after another in call order. Each one awaits the monitor
+  /// and CLMonitor calls, so independent Tasks could interleave (an older set finishing after
+  /// a newer one would leave the wrong circle).
+  private func enqueueGeofenceOperation(_ operation: @escaping @MainActor (CLMonitor) async -> Void) {
+    let previous = geofenceChain
+    geofenceChain = Task { @MainActor [weak self] in
+      await previous?.value
+      guard let self, let monitor = await self.awaitMonitor() else { return }
+      await operation(monitor)
     }
   }
 
@@ -336,18 +395,18 @@ struct ServiceSessionFlags: Equatable {
   var authorizationDeniedGlobally: Bool
   var authorizationRestricted: Bool
   var insufficientlyInUse: Bool
-  var serviceSessionRequired: Bool
   var fullAccuracyDenied: Bool
   var alwaysAuthorizationDenied: Bool
   var authorizationRequestInProgress: Bool
 
   // NOTE(iOS 18): property names per the iOS 18 SDK `CLServiceSession.Diagnostic`.
+  // `serviceSessionRequired` exists on CLLocationUpdate / CLMonitor.Event, not on
+  // CLServiceSession.Diagnostic (a session cannot report that a session is required).
   init(_ d: CLServiceSession.Diagnostic) {
     authorizationDenied = d.authorizationDenied
     authorizationDeniedGlobally = d.authorizationDeniedGlobally
     authorizationRestricted = d.authorizationRestricted
     insufficientlyInUse = d.insufficientlyInUse
-    serviceSessionRequired = d.serviceSessionRequired
     fullAccuracyDenied = d.fullAccuracyDenied
     alwaysAuthorizationDenied = d.alwaysAuthorizationDenied
     authorizationRequestInProgress = d.authorizationRequestInProgress
@@ -359,7 +418,6 @@ struct ServiceSessionFlags: Equatable {
       "authorizationDeniedGlobally": authorizationDeniedGlobally,
       "authorizationRestricted": authorizationRestricted,
       "insufficientlyInUse": insufficientlyInUse,
-      "serviceSessionRequired": serviceSessionRequired,
       "fullAccuracyDenied": fullAccuracyDenied,
       "alwaysAuthorizationDenied": alwaysAuthorizationDenied,
       "authorizationRequestInProgress": authorizationRequestInProgress,

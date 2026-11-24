@@ -33,7 +33,6 @@ export type ServiceSessionDiagnostics = {
   authorizationDeniedGlobally: boolean;
   authorizationRestricted: boolean;
   insufficientlyInUse: boolean;
-  serviceSessionRequired: boolean;
   fullAccuracyDenied: boolean;
   alwaysAuthorizationDenied: boolean;
   authorizationRequestInProgress: boolean;
@@ -53,7 +52,10 @@ export type Diagnostics = {
   engine: {
     started: boolean;
     state: DetectionStateName;
+    /** A live location loop is running right now. */
     gpsActive: boolean;
+    /** The state machine wants GPS; true while gpsActive is false means a restart is pending. */
+    gpsRequested: boolean;
     geofenceActive: boolean;
     carLinkConnected: boolean;
     /** True only in debug builds. */

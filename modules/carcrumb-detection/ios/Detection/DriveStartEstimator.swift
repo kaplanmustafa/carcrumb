@@ -20,6 +20,18 @@ public struct ActivitySpan: Equatable, Codable, Sendable {
 /// the engine then queries history and corrects the stored trip's start via
 /// `DetectionStore.refineTripStart`. Kept pure here so it is testable with `swift test`.
 public enum DriveStartEstimator {
+  /// Core Motion keeps ~7 days of history, but a drive does not start hours before the wake
+  /// that detected it; a short window keeps the query cheap and avoids gluing an old trip's
+  /// automotive run onto this one. The engine further bounds it by the last trip's end.
+  public static let defaultLookback: TimeInterval = 2 * 3600
+
+  /// Query window for the engine: from max(detectedAt - lookback, lastTripEndedAt) to detectedAt.
+  public static func queryStart(detectedAt: Date, lastTripEndedAt: Date?, lookback: TimeInterval = DriveStartEstimator.defaultLookback) -> Date {
+    let earliest = detectedAt.addingTimeInterval(-lookback)
+    guard let lastTripEndedAt, lastTripEndedAt > earliest, lastTripEndedAt < detectedAt else { return earliest }
+    return lastTripEndedAt
+  }
+
   /// - Parameters:
   ///   - history: activity entries, any order. Each lasts until the next entry's start.
   ///   - detectedAt: when the reducer started the trip (wake / first automotive time).
@@ -32,7 +44,7 @@ public enum DriveStartEstimator {
     history: [ActivitySpan],
     detectedAt: Date,
     maxInterruption: TimeInterval = 120,
-    maxLookback: TimeInterval = 7 * 24 * 3600
+    maxLookback: TimeInterval = DriveStartEstimator.defaultLookback
   ) -> Date? {
     let earliest = detectedAt.addingTimeInterval(-maxLookback)
     let spans = history

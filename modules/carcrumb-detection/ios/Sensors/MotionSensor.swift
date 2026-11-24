@@ -37,7 +37,9 @@ final class MotionSensor: @unchecked Sendable {
     running = true
     manager.startActivityUpdates(to: callbackQueue) { [weak self] activity in
       guard let activity, let mapped = MotionSensor.map(activity) else { return }
-      self?.onEvent?(.motion(mapped))
+      // startDate = when the activity really began; walking is often reported tens of seconds
+      // late and the park point is chosen at this time, not at delivery (DECISIONS "Park noktası").
+      self?.onEvent?(.motion(mapped, startedAt: activity.startDate))
     }
   }
 

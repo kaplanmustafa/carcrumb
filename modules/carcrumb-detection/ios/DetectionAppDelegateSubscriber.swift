@@ -15,7 +15,8 @@ import UIKit
 /// engine (and its LocationSensor) must be created here, synchronously, without waiting for JS.
 /// We start it on every launch (foreground ones too); start() never shows a permission prompt.
 public final class DetectionAppDelegateSubscriber: ExpoAppDelegateSubscriber {
-  private let log = Logger(subsystem: "app.carcrumb", category: "launch")
+  // `os.Logger`, not ExpoModulesCore's `Logger` (both are visible in this file).
+  private let log = os.Logger(subsystem: "app.carcrumb", category: "launch")
 
   public func application(
     _ application: UIApplication,

@@ -13,6 +13,10 @@ declare class CarCrumbDetectionModule extends NativeModule<CarCrumbDetectionModu
   getState(): DetectionStateName;
   /** Shows the system prompt directly (permission screen's single "Devam" button). */
   requestWhenInUseAuthorization(): Promise<LocationAuthorization>;
+  /**
+   * Always upgrade; prompts only from 'whenInUse'. Any other status (incl. 'notDetermined')
+   * resolves immediately with the current status and shows no prompt: ask While Using first.
+   */
   requestAlwaysAuthorization(): Promise<LocationAuthorization>;
   requestMotionAuthorization(): Promise<MotionAuthorization>;
   getDiagnostics(): Promise<Diagnostics>;

@@ -12,11 +12,12 @@ Tüm ürün ve mimari kararları: `docs/DECISIONS.md`. Yeni bir işe başlamadan
   - `ios/Detection/` — saf tipler ve `DetectionReducer` (CoreLocation/CoreMotion import etmez)
   - `ios/Tests/` — XCTest; yalnızca macOS CI'da koşar
   - `src/`, `index.ts` — TS köprüsü; durum adları Swift'teki `DetectionState.name` ile aynı olmalı
-- `fixtures/traces/` — sensör kayıtları; gerçek kayıtlar git'e girmez, yalnızca `synthetic_*.json`
+- `fixtures/traces/` — sensör kayıtları; gerçek kayıtlar git'e girmez, yalnızca `synthetic_*` (CI bunu zorlar)
 - Durum adları kodda İngilizce: IDLE, MAYBE_DRIVING, DRIVING, MAYBE_PARKED, PARKED (DECISIONS.md'deki Türkçe diyagramla birebir).
 
 ## Stack
 - React Native + Expo (dev client, Expo Go değil) + TypeScript — sadece arayüz
+- Tasarım sistemi: `@expo/ui` (SwiftUI) + kendi token'larımız; ekranlarda sabit renk/boyut yazılmaz, token ve ortak bileşen kullanılır (`npx expo install @expo/ui`)
 - Swift native modül (Expo Modules API) — algılama, sensörler, SQLite yazımı
 - Core Location, Core Motion, AVAudioSession, CMAltimeter
 - SQLite (GRDB, WAL) — lokal, veri cihazdan çıkmaz, sunucu yok

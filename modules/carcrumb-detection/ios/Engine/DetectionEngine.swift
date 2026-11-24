@@ -31,12 +31,15 @@ public final class DetectionEngine: @unchecked Sendable {
   let queue = DispatchQueue(label: "app.carcrumb.detection.engine", qos: .utility)
 
   // Only coordinates-free values are logged: state names, event types, effect names.
-  private let log = Logger(subsystem: "app.carcrumb", category: "detection")
+  // `os.Logger` spelled out: ExpoModulesCore also exports a `Logger` type.
+  private let log = os.Logger(subsystem: "app.carcrumb", category: "detection")
 
   // MARK: Queue-confined state
   private let reducer = DetectionReducer()
   private var state: DetectionState = .idle
   private var tripID: Int64?
+  /// End of the last closed trip; bounds the Core Motion history query of the next one.
+  private var lastTripEndedAt: Date?
   private let store: DetectionStore
   private let stateFile = StateFile()
   private let recorder = TraceRecorder()
@@ -47,7 +50,8 @@ public final class DetectionEngine: @unchecked Sendable {
   /// Active states are persisted at most this often within the same state (the trip's
   /// ring buffer changes every second while driving).
   private let persistInterval: TimeInterval = 15
-  /// Period of `.tick` in MAYBE_DRIVING / MAYBE_PARKED.
+  /// Period of `.tick` in every GPS state (MAYBE_DRIVING / DRIVING / MAYBE_PARKED), so the
+  /// reducer's timeouts fire even when no sensor data arrives (Karar A/B).
   private let tickInterval: TimeInterval = 15
 
   // MARK: Main-thread-confined
@@ -87,7 +91,11 @@ public final class DetectionEngine: @unchecked Sendable {
 
     // 1. Restore first. Enqueued before any sensor can enqueue an event, so FIFO guarantees
     //    the wake event that relaunched us is reduced against the restored state.
-    queue.async { self.restore() }
+    //    Trace housekeeping goes first: release builds delete any traces/ left on disk.
+    queue.async {
+      self.recorder.prepare(now: Date())
+      self.restore()
+    }
 
     // 2. Sensors.
     let location = LocationSensor()
@@ -124,24 +132,51 @@ public final class DetectionEngine: @unchecked Sendable {
 
   private func process(_ event: DetectionEvent, now: Date) {
     dispatchPrecondition(condition: .onQueue(queue))
+    let effects = reduceAndApply(event, now: now)
+    if case .wake = event {
+      syncCarLinkLevel(now: now)
+    } else if effects.contains(.startGPS) {
+      syncCarLinkLevel(now: now)
+    }
+  }
+
+  @discardableResult
+  private func reduceAndApply(_ event: DetectionEvent, now: Date) -> [Effect] {
     recorder.record(event, at: now) // DEBUG only; no-op in release
     let old = state
     let (next, effects) = reducer.reduce(state, event, now: now)
     state = next
     apply(effects, now: now)
     didUpdateState(from: old, cause: event.typeName, now: now)
+    return effects
+  }
+
+  /// `CarLinkSensor` reports changes only. After a wake or a GPS start the reducer may not
+  /// know the current level (e.g. CarPlay connected before MAYBE_DRIVING timed out to IDLE,
+  /// or a fresh process after relaunch), so re-read the route and feed the level as a normal,
+  /// recorded `.carLink` event when it differs from what the state believes.
+  private func syncCarLinkLevel(now: Date) {
+    dispatchPrecondition(condition: .onQueue(queue))
+    guard let known = state.knownCarLinkLevel else { return }
+    let level = carLink.refresh()
+    guard level != known else { return }
+    reduceAndApply(.carLink(connected: level), now: now)
   }
 
   private func restore() {
     dispatchPrecondition(condition: .onQueue(queue))
     let now = Date()
     let persisted = stateFile.load()
-    let (restored, effects) = StateRestorePolicy.restore(persisted, now: now)
+    // Recorded so a field trace replays across the relaunch (TraceReplayer runs the same policy).
+    recorder.recordRestore(persisted ?? PersistedDetectionState(state: .idle, savedAt: now), at: now)
+    let (restored, effects) = StateRestorePolicy.restore(persisted, now: now, reducer: reducer)
     state = restored
+    lastTripEndedAt = persisted?.lastTripEndedAt
     tripID = restored.hasOpenTrip || effects.contains(where: \.isEndTrip) ? persisted?.tripID : nil
     log.info("restored state \(restored.name, privacy: .public) (persisted: \(persisted?.state.name ?? "none", privacy: .public))")
     apply(effects, now: now)
     didUpdateState(from: .idle, cause: "restore", now: now, forceNotify: true)
+    if effects.contains(.startGPS) { syncCarLinkLevel(now: now) }
   }
 
   // MARK: Effects
@@ -172,6 +207,7 @@ public final class DetectionEngine: @unchecked Sendable {
         }
         closedTripID = tripID
         tripID = nil
+        lastTripEndedAt = endedAt
       case let .saveParking(point):
         do { try store.saveParking(point, tripID: closedTripID ?? tripID) } catch {
           log.error("store.saveParking failed")
@@ -186,14 +222,16 @@ public final class DetectionEngine: @unchecked Sendable {
 
   /// Real trip start from Core Motion history (docs/DECISIONS.md, "Gerçek başlangıç").
   /// The reducer's start is the wake time; the drive often began minutes earlier (the wake
-  /// trigger lags). Query the last 7 days up to the confirmation time, estimate the start of
-  /// the automotive run, and move the stored start earlier if needed. The reducer state is
-  /// not changed (it never uses `trip.startedAt` for decisions).
+  /// trigger lags). Core Motion keeps 7 days, but the query only covers the last ~2 hours and
+  /// never reaches before the previous trip's end (so an old trip's automotive run is never
+  /// glued onto this one). The reducer state is not changed (it never uses
+  /// `trip.startedAt` for decisions).
   private func refineTripStart(tripID id: Int64, reducerStart: Date, confirmedAt: Date) {
-    let from = confirmedAt.addingTimeInterval(-7 * 24 * 3600)
+    let from = DriveStartEstimator.queryStart(detectedAt: confirmedAt, lastTripEndedAt: lastTripEndedAt)
+    let lookback = confirmedAt.timeIntervalSince(from)
     motion.queryHistory(from: from, to: confirmedAt) { [weak self] spans in
       guard let self else { return }
-      guard let estimate = DriveStartEstimator.estimateStart(history: spans, detectedAt: confirmedAt),
+      guard let estimate = DriveStartEstimator.estimateStart(history: spans, detectedAt: confirmedAt, maxLookback: lookback),
             estimate < reducerStart
       else { return }
       self.queue.async {
@@ -233,7 +271,7 @@ public final class DetectionEngine: @unchecked Sendable {
     let due = lastPersistAt.map { now.timeIntervalSince($0) >= persistInterval } ?? true
     guard changed || (state.isGPSState && due) else { return }
     do {
-      try stateFile.save(PersistedDetectionState(state: state, savedAt: now, tripID: tripID))
+      try stateFile.save(PersistedDetectionState(state: state, savedAt: now, tripID: tripID, lastTripEndedAt: lastTripEndedAt))
       lastPersistAt = now
     } catch {
       log.error("state persist failed")
@@ -241,11 +279,8 @@ public final class DetectionEngine: @unchecked Sendable {
   }
 
   private func updateTickTimer() {
-    let wantsTick: Bool
-    switch state {
-    case .maybeDriving, .maybeParked: wantsTick = true
-    default: wantsTick = false
-    }
+    // DRIVING ticks too: the 15 min stationary timeout must fire when no fixes arrive at all.
+    let wantsTick = state.isGPSState
     if wantsTick, tickTimer == nil {
       let timer = DispatchSource.makeTimerSource(queue: queue)
       timer.schedule(deadline: .now() + tickInterval, repeating: tickInterval, leeway: .seconds(2))
@@ -253,6 +288,9 @@ public final class DetectionEngine: @unchecked Sendable {
         guard let self else { return }
         self.process(.tick, now: Date())
       }
+      // NOTE: while the app is suspended the timer does not fire; in GPS states the
+      // background activity session keeps the process running, which is what makes ticks
+      // (and the timeouts) reliable there.
       timer.resume()
       tickTimer = timer
     } else if !wantsTick, let timer = tickTimer {
@@ -297,6 +335,7 @@ public final class DetectionEngine: @unchecked Sendable {
     var serviceSession: Any = NSNull()
     var liveUpdates: Any = NSNull()
     var gpsActive = false
+    var gpsRequested = false
     var geofenceActive = false
     if let location {
       locationInfo = [
@@ -306,6 +345,7 @@ public final class DetectionEngine: @unchecked Sendable {
       serviceSession = location.lastServiceDiagnostic?.dictionary ?? NSNull()
       liveUpdates = location.lastLiveFlags?.dictionary ?? NSNull()
       gpsActive = location.isGPSActive
+      gpsRequested = location.isGPSRequested
       geofenceActive = location.geofenceActive
     }
     // Class method that Apple warns against calling on the main thread.
@@ -319,9 +359,10 @@ public final class DetectionEngine: @unchecked Sendable {
         "started": isStarted,
         "state": stateName,
         "gpsActive": gpsActive,
+        "gpsRequested": gpsRequested,
         "geofenceActive": geofenceActive,
         "carLinkConnected": carLink.isConnected,
-        "traceRecording": recorder.isEnabled,
+        "traceRecording": TraceRecorder.isEnabled,
       ] as [String: Any],
       "location": locationInfo,
       "serviceSession": serviceSession,
@@ -370,6 +411,16 @@ extension DetectionState {
     switch self {
     case .driving, .maybeParked: return true
     default: return false
+    }
+  }
+
+  /// Car link level the state believes in; nil where the reducer does not track it.
+  var knownCarLinkLevel: Bool? {
+    switch self {
+    case let .maybeDriving(_, carLink): return carLink
+    case let .driving(trip): return trip.carLinkConnected
+    case let .maybeParked(trip, _, _): return trip.carLinkConnected
+    case .idle, .parked: return nil
     }
   }
 }
