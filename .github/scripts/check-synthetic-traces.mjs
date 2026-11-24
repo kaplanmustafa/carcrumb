@@ -16,10 +16,24 @@ function walk(value, visit) {
 }
 
 for (const name of readdirSync(DIR)) {
-  if (!name.endsWith('.jsonl') && !name.endsWith('.json')) continue;
+  if (name === '.gitkeep') continue;
+  if (!name.endsWith('.jsonl') && !name.endsWith('.json')) {
+    console.error(`${name}: only .json/.jsonl traces are allowed`);
+    bad++;
+    continue;
+  }
   const lines = readFileSync(join(DIR, name), 'utf8').split(/\r?\n/).filter(Boolean);
   lines.forEach((line, i) => {
-    walk(JSON.parse(line), (o) => {
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      // Never echo the line: a parse error message would quote coordinate digits.
+      console.error(`${name}:${i + 1}: invalid JSON`);
+      bad++;
+      return;
+    }
+    walk(record, (o) => {
       const { latitude: lat, longitude: lon } = o;
       if (lat === undefined && lon === undefined) return;
       if (!(lat >= BOX.lat[0] && lat <= BOX.lat[1] && lon >= BOX.lon[0] && lon <= BOX.lon[1])) {
