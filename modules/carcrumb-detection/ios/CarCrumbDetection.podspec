@@ -19,7 +19,7 @@ Pod::Spec.new do |s|
   # GRDB is added with the storage layer. GRDB 7 is not published to CocoaPods trunk;
   # decide there between Swift Package (spm_dependency) and another route.
 
-  s.source_files = '*.swift', 'Detection/**/*.swift'
+  s.source_files = '*.swift', 'Detection/**/*.swift', 'Sensors/**/*.swift', 'Engine/**/*.swift'
   s.exclude_files = 'Tests/**/*'
 
   s.test_spec 'Tests' do |t|

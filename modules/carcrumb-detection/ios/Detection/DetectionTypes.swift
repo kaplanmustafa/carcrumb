@@ -70,7 +70,7 @@ public struct DetectionConfig: Equatable, Sendable {
   public init() {}
 }
 
-public struct Trip: Equatable, Sendable {
+public struct Trip: Equatable, Codable, Sendable {
   public var startedAt: Date
   public var hadCarLink: Bool
   /// Last `bufferWindow` seconds of location samples, oldest first.
@@ -83,13 +83,20 @@ public struct Trip: Equatable, Sendable {
   }
 }
 
-public struct ParkPoint: Equatable, Sendable {
+public struct ParkPoint: Equatable, Codable, Sendable {
   public var location: LocationSample
   public var confidence: Confidence
   public var parkedAt: Date
+
+  public init(location: LocationSample, confidence: Confidence, parkedAt: Date) {
+    self.location = location
+    self.confidence = confidence
+    self.parkedAt = parkedAt
+  }
 }
 
-public enum DetectionState: Equatable, Sendable {
+/// Codable (synthesized) so the engine can persist the last state across app termination.
+public enum DetectionState: Equatable, Codable, Sendable {
   case idle
   case maybeDriving(since: Date, carLink: Bool)
   case driving(Trip)
@@ -108,6 +115,9 @@ public enum DetectionState: Equatable, Sendable {
   }
 }
 
+/// Codable with an explicit, flat wire format because this is the debug trace format
+/// (fixtures/traces/*.jsonl, see `TraceFormat`). Renaming keys breaks recorded traces;
+/// new sensor fields must be added as optional keys here AND in the trace docs.
 public enum DetectionEvent: Equatable, Sendable {
   case wake(WakeSource)
   case motion(MotionActivity)
@@ -117,7 +127,7 @@ public enum DetectionEvent: Equatable, Sendable {
   case tick
 }
 
-public enum Effect: Equatable, Sendable {
+public enum Effect: Equatable, Codable, Sendable {
   case startGPS
   case stopGPS
   case beginTrip(startedAt: Date)
