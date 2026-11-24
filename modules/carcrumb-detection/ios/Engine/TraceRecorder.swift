@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Debug sensor recording: every reducer input (event + the `now` used) as JSON Lines in
 /// `Application Support/traces/trace-YYYY-MM-DD.jsonl` (one file per local day, appended
@@ -63,9 +64,17 @@ final class TraceRecorder {
       }
     }
     #else
-    try? FileManager.default.removeItem(at: dir)
+    do {
+      try FileManager.default.removeItem(at: dir)
+    } catch {
+      // No path or error text (it can contain the container path): only that it failed.
+      // Retried at every engine start.
+      Self.log.error("release trace cleanup failed")
+    }
     #endif
   }
+
+  private static let log = os.Logger(subsystem: "app.carcrumb", category: "trace")
 
   func record(_ event: DetectionEvent, at now: Date) {
     #if DEBUG

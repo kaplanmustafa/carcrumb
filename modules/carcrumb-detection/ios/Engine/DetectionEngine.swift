@@ -121,6 +121,8 @@ public final class DetectionEngine: @unchecked Sendable {
   public func applicationDidBecomeActive() {
     guard isStarted else { return }
     motion.startIfAuthorized()
+    // Route notifications may have been missed while suspended.
+    queue.async { self.syncCarLinkLevel(now: Date()) }
   }
 
   // MARK: Events
@@ -132,10 +134,22 @@ public final class DetectionEngine: @unchecked Sendable {
 
   private func process(_ event: DetectionEvent, now: Date) {
     dispatchPrecondition(condition: .onQueue(queue))
-    let effects = reduceAndApply(event, now: now)
-    if case .wake = event {
+    // Before reducing: a wake (relaunch / SLC / visit) and the periodic tick evaluate timeouts
+    // and park confirmation, which depend on the car link level. Re-read it first so they never
+    // run on a stale level. (Chosen over treating wake as movement evidence: SLC / visit are
+    // coarse, also fire at standstill, and would reset the stationary clock while idling.)
+    switch event {
+    case .wake, .tick:
       syncCarLinkLevel(now: now)
-    } else if effects.contains(.startGPS) {
+    default:
+      break
+    }
+    let effects = reduceAndApply(event, now: now)
+    // After reducing: a GPS start (IDLE/PARKED → MAYBE_DRIVING creates the state with
+    // carLink=false) and a walking report (about to confirm a park: Karar C needs the level).
+    if effects.contains(.startGPS) {
+      syncCarLinkLevel(now: now)
+    } else if case .motion(let activity, _) = event, activity == .walking || activity == .running {
       syncCarLinkLevel(now: now)
     }
   }
@@ -154,7 +168,9 @@ public final class DetectionEngine: @unchecked Sendable {
   /// `CarLinkSensor` reports changes only. After a wake or a GPS start the reducer may not
   /// know the current level (e.g. CarPlay connected before MAYBE_DRIVING timed out to IDLE,
   /// or a fresh process after relaunch), so re-read the route and feed the level as a normal,
-  /// recorded `.carLink` event when it differs from what the state believes.
+  /// recorded `.carLink` event when it differs from what the state believes. Nothing is
+  /// reduced or recorded when the level is unchanged, or in IDLE / PARKED (route changes there
+  /// still arrive through the sensor's own change events).
   private func syncCarLinkLevel(now: Date) {
     dispatchPrecondition(condition: .onQueue(queue))
     guard let known = state.knownCarLinkLevel else { return }

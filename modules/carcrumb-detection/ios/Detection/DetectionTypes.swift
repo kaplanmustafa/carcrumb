@@ -70,9 +70,10 @@ public struct DetectionConfig: Equatable, Sendable {
   public var geofenceRadius: Double = 150
   /// Accuracy (m) at or below which a park point can be high confidence.
   public var goodAccuracy: Double = 20
-  /// A park candidate older than this at the walking start means GPS was lost before the car
-  /// stopped (indoor car park ramps): the point is kept but confidence is low.
-  public var maxCandidateAge: TimeInterval = 30
+  /// GPS speed (m/s) at or below which a fix counts as "car standing still". A park point is
+  /// high confidence only if it is such a fix with good accuracy, i.e. taken after the car
+  /// stopped (DECISIONS "Park noktası": order of events, not age, decides confidence).
+  public var stoppedSpeed: Double = 0.5
   /// Karar A: MAYBE_PARKED without confirmation for this long (from the walking start) ends
   /// the trip: low-confidence park with car link, `uncertain` without. If the car link is
   /// still connected at that point, no park: the trip returns to DRIVING.
@@ -82,10 +83,9 @@ public struct DetectionConfig: Equatable, Sendable {
   public var drivingStationaryTimeout: TimeInterval = 15 * 60
   /// Absolute cap: DRIVING without movement for this long ends the trip even with the car
   /// link still connected (engine idling / CarPlay left on). Same closing as Karar B:
-  /// low park at the stop point with car link, `uncertain` without; end = last movement.
+  /// low park at the stop point with car link, `uncertain` without; end = when the car stopped.
+  /// Movement evidence is GPS speed >= `drivingSpeed` only (DECISIONS "Park noktası").
   public var drivingHardStationaryTimeout: TimeInterval = 60 * 60
-  /// GPS speed (m/s) at or above which a DRIVING sample counts as movement for Karar B.
-  public var movingSpeed: Double = 1.0
 
   public init() {}
 }
@@ -99,12 +99,21 @@ public struct Trip: Equatable, Sendable {
   /// Current car link level (not only "ever seen"). Park confirmation is blocked while it is
   /// connected; its loss is required for the DRIVING stationary timeout.
   public var carLinkConnected: Bool
-  /// Last evidence of the car moving (automotive activity or GPS speed >= `movingSpeed`).
+  /// Last GPS fix at driving speed (>= `drivingSpeed`). The only movement evidence: walking
+  /// speed and Core Motion `automotive` alone do not count (idling engine vibration).
   public var lastMovingAt: Date
+  /// Reducer time of the first fix below driving speed after `lastMovingAt` (the car came to a
+  /// stop). nil while moving. Stationary timeouts count from `stoppedAt ?? lastMovingAt`, and
+  /// a trip closed by them ends at that time.
+  public var stoppedAt: Date?
+  /// Stop point of the current stop: the first good-accuracy fix with the car standing still
+  /// (speed <= `stoppedSpeed`) after `stoppedAt`; until one arrives, the most accurate
+  /// below-driving-speed fix at vehicle speed. Never a walking-speed fix. Reset on movement.
+  public var lastStopFix: LocationSample?
   /// Latest activity reported by Core Motion during the trip (nil = none yet).
   public var lastActivity: MotionActivity?
-  /// Newest good-accuracy sample that already fell out of `buffer`. Lets the park point be
-  /// chosen when the walking report arrives late or GPS was lost before the stop.
+  /// Newest good-accuracy fix taken while the vehicle moved (speed > `maxWalkingSpeed`) that
+  /// already fell out of `buffer`. Never advances to fixes taken at standstill / walking speed.
   public var anchor: LocationSample?
 
   public init(
@@ -113,6 +122,8 @@ public struct Trip: Equatable, Sendable {
     buffer: [LocationSample] = [],
     carLinkConnected: Bool? = nil,
     lastMovingAt: Date? = nil,
+    stoppedAt: Date? = nil,
+    lastStopFix: LocationSample? = nil,
     lastActivity: MotionActivity? = nil,
     anchor: LocationSample? = nil
   ) {
@@ -121,14 +132,19 @@ public struct Trip: Equatable, Sendable {
     self.buffer = buffer
     self.carLinkConnected = carLinkConnected ?? hadCarLink
     self.lastMovingAt = lastMovingAt ?? startedAt
+    self.stoppedAt = stoppedAt
+    self.lastStopFix = lastStopFix
     self.lastActivity = lastActivity
     self.anchor = anchor
   }
+
+  /// Start of the current standstill for the stationary timeouts; also the trip end they write.
+  public var stationarySince: Date { stoppedAt ?? lastMovingAt }
 }
 
 extension Trip: Codable {
   private enum CodingKeys: String, CodingKey {
-    case startedAt, hadCarLink, buffer, carLinkConnected, lastMovingAt, lastActivity, anchor
+    case startedAt, hadCarLink, buffer, carLinkConnected, lastMovingAt, stoppedAt, lastStopFix, lastActivity, anchor
   }
 
   /// Fields added after the first version are optional on decode, so a `state.json` written
@@ -143,6 +159,8 @@ extension Trip: Codable {
       buffer: buffer,
       carLinkConnected: try c.decodeIfPresent(Bool.self, forKey: .carLinkConnected),
       lastMovingAt: try c.decodeIfPresent(Date.self, forKey: .lastMovingAt) ?? buffer.last?.timestamp,
+      stoppedAt: try c.decodeIfPresent(Date.self, forKey: .stoppedAt),
+      lastStopFix: try c.decodeIfPresent(LocationSample.self, forKey: .lastStopFix),
       lastActivity: try c.decodeIfPresent(MotionActivity.self, forKey: .lastActivity),
       anchor: try c.decodeIfPresent(LocationSample.self, forKey: .anchor))
   }
@@ -154,6 +172,8 @@ extension Trip: Codable {
     try c.encode(buffer, forKey: .buffer)
     try c.encode(carLinkConnected, forKey: .carLinkConnected)
     try c.encode(lastMovingAt, forKey: .lastMovingAt)
+    try c.encodeIfPresent(stoppedAt, forKey: .stoppedAt)
+    try c.encodeIfPresent(lastStopFix, forKey: .lastStopFix)
     try c.encodeIfPresent(lastActivity, forKey: .lastActivity)
     try c.encodeIfPresent(anchor, forKey: .anchor)
   }

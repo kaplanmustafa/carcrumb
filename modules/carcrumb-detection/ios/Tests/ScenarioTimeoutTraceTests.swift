@@ -82,16 +82,13 @@ final class ScenarioTimeoutTraceTests: XCTestCase {
 
   /// Same idling, but Core Motion flips stationary ↔ automotive every 5 min (engine vibration;
   /// MotionSensor maps automotive+stationary to automotive). GPS speed stays 0 the whole time.
-  /// Each `.motion(.automotive)` sets `lastMovingAt = now`, so the 60 min cap never runs out
-  /// and GPS stays on for the whole trace (~70 min). DECISIONS: "GPS hiçbir durumda süresiz
-  /// açık kalmaz".
+  /// Movement evidence is GPS driving speed only, so the flicker must not reset the 60 min
+  /// clock. DECISIONS: "GPS hiçbir durumda süresiz açık kalmaz".
   func testIdleWithAutomotiveFlickerStillHitsHardCap() throws {
     let result = try replay("synthetic_idle_60min_carplay_motion_flicker.jsonl")
-    knownGap("automotive activity without GPS movement resets the stationary clock") {
-      XCTAssertTrue(result.transitions.contains { $0.to == "PARKED" && $0.at <= at(598 + 3600 + 60) },
-                    "expected the hard cap at ~t+4198 (no GPS movement since t+598)")
-      XCTAssertNotEqual(result.finalState.name, "DRIVING")
-    }
+    XCTAssertTrue(result.transitions.contains { $0.to == "PARKED" && $0.at <= at(598 + 3600 + 60) },
+                  "expected the hard cap at ~t+4198 (no GPS movement since t+598)")
+    XCTAssertNotEqual(result.finalState.name, "DRIVING")
   }
 
   // MARK: MAYBE_PARKED 10 min with car link connected → back to the same trip
@@ -133,20 +130,17 @@ final class ScenarioTimeoutTraceTests: XCTestCase {
   }
 
   /// Walking delivered at t+700, Core Motion start t+604 (96 s late), walking fixes every 10 s.
-  /// By then the 60 s ring buffer holds only walking fixes and `append` has moved `anchor` to the
-  /// newest *evicted* good fix (a walking fix, t+630), so `pickCandidate` finds nothing at or
-  /// before t+604 and falls back to `pool.first` = that walking fix (~33 m off, low).
+  /// By then the 60 s ring buffer holds only walking fixes. The stop fix (`lastStopFix`) and the
+  /// moving-only anchor keep the pre-transition stop point; walking fixes are never candidates.
   func testLateWalking96sStillParksAtStopPoint() throws {
     let result = try replay("synthetic_late_walking_96s.jsonl")
 
     XCTAssertEqual(tripStarts(result.effects), [t0])
     XCTAssertEqual(tripEnds(result.effects), [.confirmed])
     XCTAssertEqual(parkings(result.effects).count, 1)
-    knownGap("anchor advances past the walking start; pre-transition stop fix is lost") {
-      let park = parkings(result.effects).first
-      XCTAssertEqual(park?.location, stop, "park point must be the stop fix before the walking start")
-      XCTAssertEqual(park?.confidence, .high, "stop fix is 4 s before the walking start, acc 5 m")
-    }
+    let park = parkings(result.effects).first
+    XCTAssertEqual(park?.location, stop, "park point must be the stop fix before the walking start")
+    XCTAssertEqual(park?.confidence, .high, "stop fix taken at standstill, acc 5 m")
   }
 
   // MARK: Car link drops after the user already walked away (wireless CarPlay range)
@@ -164,11 +158,9 @@ final class ScenarioTimeoutTraceTests: XCTestCase {
 
   // MARK: Indoor car park: recent entrance fix, then degraded fixes
 
-  /// Entrance fix (acc 6 m) only 20 s before walking, then 65 m / 120 m indoor fixes. The park
-  /// point is right (last reliable fix), but confidence is high because only the candidate's
-  /// age (<= 30 s) and own accuracy are checked; the degraded fixes after it are ignored.
-  /// QA scenario set requires the low-accuracy flag for indoor car parks; DECISIONS only
-  /// mentions staleness — Tech Lead decision needed.
+  /// Entrance fix (acc 6 m, still rolling at 3 m/s) only 20 s before walking, then 65 m /
+  /// 120 m indoor fixes. GPS degraded before the car stopped → low (DECISIONS "Park noktası":
+  /// order of events, not age).
   func testGarageRecentEntranceThenDegradedIsLowConfidence() throws {
     let result = try replay("synthetic_garage_entrance_recent_then_degraded.jsonl")
 
@@ -176,8 +168,6 @@ final class ScenarioTimeoutTraceTests: XCTestCase {
     XCTAssertEqual(park.location.latitude, 41.0)
     XCTAssertEqual(park.location.longitude, 29.0)
     XCTAssertEqual(park.location.accuracy, 6)
-    knownGap("degraded fixes between candidate and walking start do not lower confidence") {
-      XCTAssertEqual(park.confidence, .low)
-    }
+    XCTAssertEqual(park.confidence, .low)
   }
 }

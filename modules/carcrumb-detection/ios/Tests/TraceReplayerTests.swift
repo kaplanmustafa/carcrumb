@@ -59,6 +59,38 @@ final class TraceReplayerTests: XCTestCase {
     XCTAssertEqual(try TraceFormat.decodeLines(data), records)
   }
 
+  /// Security: a PARKED / IDLE restore must not copy coordinates into the trace.
+  func testRestingRestoreRecordHasNoCoordinates() throws {
+    let s = LocationSample(latitude: 41.123456, longitude: 29.654321, accuracy: 5, speed: 0, timestamp: t0)
+    let parked = DetectionState.parked(ParkPoint(location: s, confidence: .high, parkedAt: t0))
+    let record = TraceRecord(time: t0.addingTimeInterval(100), restore: PersistedDetectionState(state: parked, savedAt: t0))
+    XCTAssertEqual(record.payload, .restoreResting(stateName: "PARKED", savedAt: t0))
+    let line = String(decoding: try TraceFormat.encodeLine(record), as: UTF8.self)
+    XCTAssertFalse(line.contains("41.123456"))
+    XCTAssertFalse(line.contains("29.654321"))
+    XCTAssertFalse(line.contains("latitude"))
+    XCTAssertEqual(try TraceFormat.decodeLines(Data(line.utf8)), [record])
+  }
+
+  func testOpenTripRestoreRecordIsFull() {
+    let s = LocationSample(latitude: 41, longitude: 29, accuracy: 5, speed: 0, timestamp: t0)
+    let persisted = PersistedDetectionState(state: .driving(Trip(startedAt: t0, hadCarLink: true, buffer: [s])), savedAt: t0)
+    XCTAssertEqual(TraceRecord(time: t0, restore: persisted).payload, .restore(persisted))
+  }
+
+  /// Replay: a resting restore keeps the replay's own PARKED state (with its point) and emits
+  /// nothing; from an open-trip state (inconsistent trace) it continues from IDLE.
+  func testReplayOfRestingRestore() {
+    let s = LocationSample(latitude: 41, longitude: 29, accuracy: 5, speed: 0, timestamp: t0)
+    let parked = DetectionState.parked(ParkPoint(location: s, confidence: .high, parkedAt: t0))
+    let record = TraceRecord(time: t0.addingTimeInterval(100), restore: PersistedDetectionState(state: parked, savedAt: t0))
+    let kept = TraceReplayer().replay([record], from: parked)
+    XCTAssertEqual(kept.finalState, parked)
+    XCTAssertEqual(kept.effects, [])
+    XCTAssertEqual(TraceReplayer().replay([record], from: .maybeDriving(since: t0, carLink: false)).finalState, .idle)
+    XCTAssertEqual(TraceReplayer().replay([record]).finalState, .idle)
+  }
+
   /// Traces recorded before `startedAt` existed still decode (startedAt = nil).
   func testMotionWithoutStartedAtDecodes() throws {
     let text = "{\"event\":{\"activity\":\"walking\",\"type\":\"motion\"},\"t\":1800000605}\n"
@@ -173,16 +205,17 @@ final class StateRestorePolicyTests: XCTestCase {
 
   /// Karar E: stale DRIVING whose car link had already dropped and whose last fix was
   /// stationary → low park at the stop point (never high), no stopGPS in a fresh process.
+  /// (Updated for the stop model: "stopped" is `stoppedAt`, trip end = `stoppedAt`.)
   func testStaleDrivingAfterLinkLossParksLowAtStopPoint() {
     let stop = LocationSample(latitude: 41, longitude: 29, accuracy: 5, speed: 0, timestamp: t0.addingTimeInterval(50))
     let trip = Trip(startedAt: t0, hadCarLink: true, buffer: [stop], carLinkConnected: false,
-                    lastMovingAt: t0.addingTimeInterval(40))
+                    lastMovingAt: t0.addingTimeInterval(40), stoppedAt: t0.addingTimeInterval(50), lastStopFix: stop)
     let (state, fx) = StateRestorePolicy.restore(
       PersistedDetectionState(state: .driving(trip), savedAt: t0.addingTimeInterval(60)), now: t0.addingTimeInterval(3600))
-    let point = ParkPoint(location: stop, confidence: .low, parkedAt: t0.addingTimeInterval(40))
+    let point = ParkPoint(location: stop, confidence: .low, parkedAt: t0.addingTimeInterval(50))
     XCTAssertEqual(state, .parked(point))
     XCTAssertEqual(fx, [
-      .endTrip(status: .confirmed, endedAt: t0.addingTimeInterval(40)),
+      .endTrip(status: .confirmed, endedAt: t0.addingTimeInterval(50)),
       .saveParking(point),
       .setGeofence(center: stop, radius: 150),
     ])

@@ -11,14 +11,20 @@ import Foundation
 //   {"event":{"connected":true,"type":"carLink"},"t":1800000001}
 //   {"event":{"type":"tick"},"t":1800000140}
 //   {"restore":{"savedAt":1800000300,"state":{…},"version":1},"t":1800000590}
+//   {"restoreResting":{"savedAt":1800000300,"state":"PARKED"},"t":1800000590}
 //
 // `t` is the `now` the engine passed to the reducer (or to `StateRestorePolicy`), so replay
 // is exact.
 //
 // Optional keys (older traces without them still decode):
 // - motion `startedAt`: `CMMotionActivity.startDate`, the real start of the activity.
-// - `restore` records: the persisted state the engine restored at launch (process relaunch).
-//   Replay runs it through `StateRestorePolicy` exactly like the engine does.
+// - `restore` records: the persisted state the engine restored at launch (process relaunch),
+//   written in full ONLY for an open trip (MAYBE_DRIVING / DRIVING / MAYBE_PARKED). Replay
+//   runs it through `StateRestorePolicy` exactly like the engine does.
+// - `restoreResting`: IDLE / PARKED restores carry the state name and save time only, never
+//   the park point's coordinates (security review: a resting restore happens on every launch
+//   and would copy the last park point into every day's trace). Replay keeps its current
+//   resting state (IDLE and PARKED reduce identically); see `TraceReplayer.replay`.
 //
 // Blank lines are ignored. Traces contain raw coordinates: they stay on the device
 // (Application Support/traces, excluded from backup) and are never logged or uploaded.
@@ -27,7 +33,10 @@ import Foundation
 public struct TraceRecord: Equatable, Codable, Sendable {
   public enum Payload: Equatable, Sendable {
     case event(DetectionEvent)
+    /// Open trip restored: full persisted state (needed to replay the trip).
     case restore(PersistedDetectionState)
+    /// IDLE / PARKED restored: name + save time only, no coordinates.
+    case restoreResting(stateName: String, savedAt: Date)
   }
 
   public var time: Date
@@ -38,9 +47,15 @@ public struct TraceRecord: Equatable, Codable, Sendable {
     self.payload = .event(event)
   }
 
+  /// Picks the privacy-preserving form: full state only for an open trip.
   public init(time: Date, restore persisted: PersistedDetectionState) {
     self.time = time
-    self.payload = .restore(persisted)
+    switch persisted.state {
+    case .idle, .parked:
+      self.payload = .restoreResting(stateName: persisted.state.name, savedAt: persisted.savedAt)
+    case .maybeDriving, .driving, .maybeParked:
+      self.payload = .restore(persisted)
+    }
   }
 
   /// The reducer event; nil for restore records.
@@ -53,7 +68,7 @@ public struct TraceRecord: Equatable, Codable, Sendable {
   public var typeName: String {
     switch payload {
     case let .event(e): return e.typeName
-    case .restore: return "restore"
+    case .restore, .restoreResting: return "restore"
     }
   }
 
@@ -61,6 +76,12 @@ public struct TraceRecord: Equatable, Codable, Sendable {
     case time = "t"
     case event
     case restore
+    case restoreResting
+  }
+
+  private struct RestingRestore: Codable {
+    var state: String
+    var savedAt: Date
   }
 
   public init(from decoder: Decoder) throws {
@@ -70,6 +91,8 @@ public struct TraceRecord: Equatable, Codable, Sendable {
       payload = .event(event)
     } else if let persisted = try c.decodeIfPresent(PersistedDetectionState.self, forKey: .restore) {
       payload = .restore(persisted)
+    } else if let resting = try c.decodeIfPresent(RestingRestore.self, forKey: .restoreResting) {
+      payload = .restoreResting(stateName: resting.state, savedAt: resting.savedAt)
     } else {
       throw DecodingError.dataCorruptedError(forKey: .event, in: c, debugDescription: "record has neither event nor restore")
     }
@@ -81,6 +104,8 @@ public struct TraceRecord: Equatable, Codable, Sendable {
     switch payload {
     case let .event(e): try c.encode(e, forKey: .event)
     case let .restore(p): try c.encode(p, forKey: .restore)
+    case let .restoreResting(name, savedAt):
+      try c.encode(RestingRestore(state: name, savedAt: savedAt), forKey: .restoreResting)
     }
   }
 }
@@ -215,6 +240,16 @@ public struct TraceReplayer: Sendable {
         result = reducer.reduce(state, event, now: record.time)
       case let .restore(persisted):
         result = StateRestorePolicy.restore(persisted, now: record.time, reducer: reducer)
+      case .restoreResting:
+        // The engine restored IDLE / PARKED without effects. The park point is not in the
+        // trace on purpose; keep the replay's own resting state if it has one (IDLE and
+        // PARKED reduce identically), else continue from IDLE.
+        switch state {
+        case .idle, .parked:
+          result = (state, [])
+        case .maybeDriving, .driving, .maybeParked:
+          result = (.idle, [])
+        }
       }
       if result.0.name != state.name {
         transitions.append(Transition(at: record.time, from: state.name, to: result.0.name, eventType: record.typeName))

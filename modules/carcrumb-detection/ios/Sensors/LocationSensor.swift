@@ -190,6 +190,10 @@ final class LocationSensor: NSObject {
   func startGPS() {
     gpsWanted = true
     restartAttempts = 0
+    // No location authorization: start neither the live loop nor the background session
+    // (it would only show an indicator without data). `gpsWanted` stays true, so the
+    // authorization callback starts GPS if permission is granted while still wanted.
+    guard hasLocationAuthorization else { return }
     // Keeps the app running in the background and shows the blue indicator while driving.
     // NOTE(iOS): Apple documents starting a CLBackgroundActivitySession from the foreground;
     // a session recreated during a background relaunch continues one that existed before.
@@ -239,7 +243,34 @@ final class LocationSensor: NSObject {
       try? await Task.sleep(for: .seconds(delay))
       guard let self, !Task.isCancelled, self.gpsWanted, self.liveTask == nil else { return }
       self.restartTask = nil
+      // Authorization revoked: stop retrying; the authorization callback restarts GPS.
+      guard self.hasLocationAuthorization else { return }
       self.startLiveLoop()
+    }
+  }
+
+  var hasLocationAuthorization: Bool {
+    switch manager.authorizationStatus {
+    case .authorizedAlways, .authorizedWhenInUse: return true
+    default: return false
+    }
+  }
+
+  /// Authorization changed while GPS is wanted: start it once granted, release the session
+  /// and loop once revoked (gpsWanted stays true; the state machine decides when to stop).
+  private func applyAuthorizationToGPS() {
+    guard gpsWanted else { return }
+    if hasLocationAuthorization {
+      if liveTask == nil { startGPS() }
+    } else {
+      liveGeneration += 1 // the loop's end is stale; no restart attempts
+      restartTask?.cancel()
+      restartTask = nil
+      liveTask?.cancel()
+      liveTask = nil
+      backgroundSession?.invalidate()
+      backgroundSession = nil
+      lastLiveFlags = nil
     }
   }
 
@@ -340,6 +371,7 @@ extension LocationSensor: CLLocationManagerDelegate {
     MainActor.assumeIsolated {
       self.refreshAuthorizationDependents()
       self.resolveAuthorizationWaitersIfDecided()
+      self.applyAuthorizationToGPS()
       self.onAuthorizationChange?()
     }
   }
@@ -395,18 +427,19 @@ struct ServiceSessionFlags: Equatable {
   var authorizationDeniedGlobally: Bool
   var authorizationRestricted: Bool
   var insufficientlyInUse: Bool
+  var serviceSessionRequired: Bool
   var fullAccuracyDenied: Bool
   var alwaysAuthorizationDenied: Bool
   var authorizationRequestInProgress: Bool
 
-  // NOTE(iOS 18): property names per the iOS 18 SDK `CLServiceSession.Diagnostic`.
-  // `serviceSessionRequired` exists on CLLocationUpdate / CLMonitor.Event, not on
-  // CLServiceSession.Diagnostic (a session cannot report that a session is required).
+  // NOTE(iOS 18): property names per the iOS 18 SDK `CLServiceSession.Diagnostic`, including
+  // `serviceSessionRequired` (present in the SDK; confirmed by the CI build).
   init(_ d: CLServiceSession.Diagnostic) {
     authorizationDenied = d.authorizationDenied
     authorizationDeniedGlobally = d.authorizationDeniedGlobally
     authorizationRestricted = d.authorizationRestricted
     insufficientlyInUse = d.insufficientlyInUse
+    serviceSessionRequired = d.serviceSessionRequired
     fullAccuracyDenied = d.fullAccuracyDenied
     alwaysAuthorizationDenied = d.alwaysAuthorizationDenied
     authorizationRequestInProgress = d.authorizationRequestInProgress
@@ -418,6 +451,7 @@ struct ServiceSessionFlags: Equatable {
       "authorizationDeniedGlobally": authorizationDeniedGlobally,
       "authorizationRestricted": authorizationRestricted,
       "insufficientlyInUse": insufficientlyInUse,
+      "serviceSessionRequired": serviceSessionRequired,
       "fullAccuracyDenied": fullAccuracyDenied,
       "alwaysAuthorizationDenied": alwaysAuthorizationDenied,
       "authorizationRequestInProgress": authorizationRequestInProgress,

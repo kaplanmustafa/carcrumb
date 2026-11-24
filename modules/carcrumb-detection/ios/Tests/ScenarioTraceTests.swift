@@ -188,10 +188,29 @@ final class ScenarioTraceTests: XCTestCase {
   }
 
   /// GPS is gone for 100 s before walking starts (car kept driving down the ramps). The last fix
-  /// is accurate but stale (> `maxCandidateAge`), so the park is low confidence.
+  /// was taken while the car was still moving (3 m/s) and GPS was lost before it stopped → low.
   func testGarageWithGPSLostIsLowConfidence() throws {
     let result = try replay("synthetic_garage_gps_lost.jsonl")
     XCTAssertEqual(parkings(result.effects).first?.confidence, .low)
+  }
+
+  /// Car stops at t+600 (good fix, speed 0), the user sits in the car for 90 s with GPS silent,
+  /// engine off at t+686, walks from t+690. GPS went silent AFTER the car stopped, so the park
+  /// is high confidence (DECISIONS "Park noktası": order of events, not age).
+  func testSittingInCar90sWithSilentGPSIsHighConfidence() throws {
+    let result = try replay("synthetic_sit_in_car_90s.jsonl")
+    let stop = LocationSample(latitude: 41.0, longitude: 29.0, accuracy: 5, speed: 0, timestamp: at(600))
+    let point = ParkPoint(location: stop, confidence: .high, parkedAt: at(600))
+    XCTAssertEqual(result.finalState, .parked(point))
+    XCTAssertEqual(result.transitions.map(\.to), ["MAYBE_DRIVING", "DRIVING", "MAYBE_PARKED", "PARKED"])
+    XCTAssertEqual(result.effects, [
+      .startGPS,
+      .beginTrip(startedAt: t0),
+      .stopGPS,
+      .endTrip(status: .confirmed, endedAt: at(750)),
+      .saveParking(point),
+      .setGeofence(center: stop, radius: 150),
+    ])
   }
 
   // MARK: Phone left in the car → no walking, parking late but correct

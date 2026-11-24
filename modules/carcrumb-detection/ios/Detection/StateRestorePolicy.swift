@@ -43,7 +43,7 @@ public struct PersistedDetectionState: Equatable, Codable, Sendable {
 ///   low-confidence park at the candidate, whatever the age; without → `uncertain`, no park.
 /// - DRIVING too old (Karar E, "at most low"): the ring buffer is stale and the car may have
 ///   driven on, so a park is written only when the saved trip already looked like the end of
-///   a drive (car link had dropped and the last fix was stationary); it is then low confidence
+///   a drive (car link had dropped and the car had stopped); it is then low confidence
 ///   at the stop point. Otherwise `uncertain` at the save time, no park.
 public enum StateRestorePolicy {
   public static let defaultMaxResumeAge: TimeInterval = 15 * 60
@@ -67,8 +67,8 @@ public enum StateRestorePolicy {
       return fresh ? (persisted.state, [.startGPS]) : (.idle, [])
     case .driving(let trip):
       if fresh { return (persisted.state, [.startGPS]) }
-      let lastFixStationary = trip.buffer.last.map { $0.speed >= 0 && $0.speed < reducer.config.movingSpeed } ?? false
-      if trip.hadCarLink, !trip.carLinkConnected, lastFixStationary {
+      // The car had stopped (a fix below driving speed after the last movement) when the state was saved.
+      if trip.hadCarLink, !trip.carLinkConnected, trip.stoppedAt != nil {
         return withoutStopGPS(reducer.closeAtStopPoint(trip))
       }
       return (.idle, [.endTrip(status: .uncertain, endedAt: persisted.savedAt)])

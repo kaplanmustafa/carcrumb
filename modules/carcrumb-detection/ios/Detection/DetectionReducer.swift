@@ -9,14 +9,18 @@ import Foundation
 /// - A stop in traffic is never parking: parking needs walking AND moving
 ///   `parkConfirmDistance` away from the stop point (minus the sample's accuracy), at walking
 ///   speed, with the car link disconnected. Duration alone never confirms a high-confidence park.
-/// - Park point = last good-accuracy buffered location before the walking start reported by
-///   Core Motion (not the last GPS fix, not the time the event arrived). Stale or inaccurate
-///   candidates are kept but flagged low confidence.
-/// - Timeouts (Karar A/B): MAYBE_PARKED ends after `maybeParkedTimeout` (back to DRIVING if the
-///   car link is still connected); DRIVING ends after `drivingStationaryTimeout` without
-///   movement once the car link is gone, and after `drivingHardStationaryTimeout` without
-///   movement even with the link connected. GPS never stays
-///   on without a bound on a stationary phone.
+/// - Movement evidence is a GPS fix at driving speed only. Walking speed and a bare Core Motion
+///   `automotive` (idling engine vibration) do not reset the stationary clock.
+/// - Park point = last good-accuracy fix at or before the walking start reported by Core Motion,
+///   taken from the ring buffer, the stop point (`lastStopFix`) and the moving-only anchor.
+///   A walking fix is never a candidate.
+/// - Park confidence is decided by the order of events, not by age: a good fix taken with the
+///   car standing still is high even if GPS went silent afterwards (user sat in the car); a
+///   fix taken while still moving (GPS degraded / lost before the car stopped) is low.
+/// - Timeouts (Karar A/B + hard cap): MAYBE_PARKED ends after `maybeParkedTimeout` (back to
+///   DRIVING if the car link is still connected); DRIVING ends after
+///   `drivingStationaryTimeout` without movement once the car link is gone, and after
+///   `drivingHardStationaryTimeout` without movement even with the link connected.
 /// - A trip without a car link ends as `uncertain` and writes no parking.
 /// - The geofence only changes with a new park (Karar D); the reducer never clears it.
 public struct DetectionReducer: Sendable {
@@ -79,8 +83,7 @@ public struct DetectionReducer: Sendable {
     var trip = trip
     switch event {
     case let .location(sample):
-      append(sample, to: &trip)
-      if sample.speed >= config.movingSpeed { trip.lastMovingAt = now }
+      ingest(sample, into: &trip, now: now)
 
     case let .carLink(connected):
       trip.carLinkConnected = connected
@@ -88,21 +91,17 @@ public struct DetectionReducer: Sendable {
 
     case let .motion(activity, startedAt):
       trip.lastActivity = activity
-      switch activity {
-      case .automotive:
-        trip.lastMovingAt = now
-      case .walking, .running:
+      if activity == .walking || activity == .running {
         let transition = startedAt ?? now
         guard let candidate = pickCandidate(trip, transitionAt: transition) else {
-          // No location at all yet: cannot pick a park point. Stay driving; the stationary
-          // timeout still bounds GPS.
+          // No vehicle fix at all yet: cannot pick a park point. Stay driving; the stationary
+          // timeouts still bound GPS.
           return checkDrivingTimeout(trip, now: now)
         }
-        let next = DetectionState.maybeParked(trip: trip, candidate: candidate, walkingSince: transition)
-        // A late walking report: the buffer may already hold walking samples far enough away.
+        // A late walking report: the buffer may already hold walking fixes far enough away.
         if let latest = trip.buffer.last, latest.timestamp > transition,
            confirmsParking(latest, trip: trip, candidate: candidate) {
-          return finishTrip(trip, candidate: candidate, walkingSince: transition, now: now)
+          return finishTrip(trip, candidate: candidate, now: now)
         }
         // The walking start may lie in the past; the timeout counts from it.
         if now.timeIntervalSince(transition) >= config.maybeParkedTimeout {
@@ -110,12 +109,13 @@ public struct DetectionReducer: Sendable {
           if trip.carLinkConnected { return checkDrivingTimeout(trip, now: now) }
           return maybeParkedTimedOut(trip, candidate: candidate, walkingSince: transition)
         }
-        return (next, [])
-      default:
-        break
+        return (.maybeParked(trip: trip, candidate: candidate, walkingSince: transition), [])
       }
+      // `automotive` alone is not movement evidence (idling vibration flips it).
 
     case .wake, .tick:
+      // Wake is not movement evidence either (SLC/visit are coarse and fire at standstill);
+      // the engine re-syncs the car link level before reducing a wake instead.
       break
     }
     return checkDrivingTimeout(trip, now: now)
@@ -126,18 +126,18 @@ public struct DetectionReducer: Sendable {
   /// Hard cap: no movement for `drivingHardStationaryTimeout` ends the trip even with the car
   /// link still connected (engine idling, CarPlay left on), so GPS is never on without bound.
   private func checkDrivingTimeout(_ trip: Trip, now: Date) -> (DetectionState, [Effect]) {
-    let stationaryFor = now.timeIntervalSince(trip.lastMovingAt)
+    let stationaryFor = now.timeIntervalSince(trip.stationarySince)
     let linkLostTimeout = !trip.carLinkConnected && stationaryFor >= config.drivingStationaryTimeout
     let hardTimeout = stationaryFor >= config.drivingHardStationaryTimeout
     guard linkLostTimeout || hardTimeout else { return (.driving(trip), []) }
     return closeAtStopPoint(trip)
   }
 
-  /// Ends a DRIVING trip whose end was not observed (stationary timeout, stale restore):
+  /// Ends a DRIVING trip whose end was not observed (stationary timeouts, stale restore):
   /// `confirmed` + low park at the stop point with car link, `uncertain` without.
-  /// Trip end = last movement, not the time we noticed.
+  /// Trip end = when the car stopped, not the time we noticed.
   func closeAtStopPoint(_ trip: Trip) -> (DetectionState, [Effect]) {
-    let endedAt = trip.lastMovingAt
+    let endedAt = trip.stationarySince
     guard trip.hadCarLink, let stop = stopPoint(trip) else {
       return (.idle, [.stopGPS, .endTrip(status: trip.hadCarLink ? .confirmed : .uncertain, endedAt: endedAt)])
     }
@@ -150,9 +150,9 @@ public struct DetectionReducer: Sendable {
     ])
   }
 
-  /// Where the car stopped: the latest good fix we still know, else the most accurate one.
+  /// Where the car stopped: the tracked stop fix, else the latest vehicle fix we still know.
   private func stopPoint(_ trip: Trip) -> LocationSample? {
-    pickCandidate(trip, transitionAt: .distantFuture)
+    trip.lastStopFix ?? pickCandidate(trip, transitionAt: .distantFuture)
   }
 
   // MARK: MAYBE_PARKED
@@ -163,19 +163,20 @@ public struct DetectionReducer: Sendable {
     var trip = trip
     switch event {
     case .motion(.automotive, _):
-      // Moving again (traffic, fuel stop): back to the same trip.
+      // Core Motion says we are in a vehicle again (traffic, fuel stop): back to the same
+      // trip. Not movement evidence for the stationary clock.
       trip.lastActivity = .automotive
-      trip.lastMovingAt = now
-      return (.driving(trip), [])
+      return checkDrivingTimeout(trip, now: now)
 
     case let .location(sample):
-      append(sample, to: &trip)
+      // The user is walking: fixes may be pedestrian standstills, so they never update the
+      // stop point here (only driving speed resets it).
+      ingest(sample, into: &trip, now: now, trackStop: false)
       if sample.speed >= config.drivingSpeed {
-        trip.lastMovingAt = now
         return (.driving(trip), [])
       }
       if confirmsParking(sample, trip: trip, candidate: candidate) {
-        return finishTrip(trip, candidate: candidate, walkingSince: walkingSince, now: now)
+        return finishTrip(trip, candidate: candidate, now: now)
       }
 
     case let .carLink(connected):
@@ -184,14 +185,14 @@ public struct DetectionReducer: Sendable {
       // Link dropped after the user already walked away: confirm with the latest sample.
       if !connected, let latest = trip.buffer.last, latest.timestamp > walkingSince,
          confirmsParking(latest, trip: trip, candidate: candidate) {
-        return finishTrip(trip, candidate: candidate, walkingSince: walkingSince, now: now)
+        return finishTrip(trip, candidate: candidate, now: now)
       }
 
     case let .motion(activity, _):
       trip.lastActivity = activity
       if activity == .walking || activity == .running, let latest = trip.buffer.last,
          latest.timestamp > walkingSince, confirmsParking(latest, trip: trip, candidate: candidate) {
-        return finishTrip(trip, candidate: candidate, walkingSince: walkingSince, now: now)
+        return finishTrip(trip, candidate: candidate, now: now)
       }
 
     case .wake, .tick:
@@ -219,7 +220,8 @@ public struct DetectionReducer: Sendable {
     return sample.distance(to: candidate) - margin >= config.parkConfirmDistance
   }
 
-  /// Karar A: no confirmation within `maybeParkedTimeout` of the walking start.
+  /// Karar A: no confirmation within `maybeParkedTimeout` of the walking start (car link not
+  /// connected; the reducer handles the connected case before calling this).
   /// With car link: confirmed + low park at the candidate. Without: uncertain, no park.
   func maybeParkedTimedOut(_ trip: Trip, candidate: LocationSample, walkingSince: Date) -> (DetectionState, [Effect]) {
     guard trip.hadCarLink else {
@@ -234,13 +236,12 @@ public struct DetectionReducer: Sendable {
     ])
   }
 
-  private func finishTrip(_ trip: Trip, candidate: LocationSample, walkingSince: Date, now: Date) -> (DetectionState, [Effect]) {
+  private func finishTrip(_ trip: Trip, candidate: LocationSample, now: Date) -> (DetectionState, [Effect]) {
     guard trip.hadCarLink else {
       // Bus / taxi / someone else's car: keep the trip as "uncertain", write no parking.
       return (.idle, [.stopGPS, .endTrip(status: .uncertain, endedAt: now)])
     }
-    let point = ParkPoint(location: candidate, confidence: confidence(of: candidate, walkingSince: walkingSince),
-                          parkedAt: candidate.timestamp)
+    let point = ParkPoint(location: candidate, confidence: confidence(of: candidate), parkedAt: candidate.timestamp)
     return (.parked(point), [
       .stopGPS,
       .endTrip(status: .confirmed, endedAt: now),
@@ -249,40 +250,85 @@ public struct DetectionReducer: Sendable {
     ])
   }
 
+  // MARK: Motion / stop tracking
+
+  /// Appends a fix and updates the movement / stop bookkeeping.
+  private func ingest(_ sample: LocationSample, into trip: inout Trip, now: Date, trackStop: Bool = true) {
+    append(sample, to: &trip)
+    if sample.speed >= config.drivingSpeed {
+      // Moving: the previous stop (red light, jam) is over.
+      trip.lastMovingAt = now
+      trip.stoppedAt = nil
+      trip.lastStopFix = nil
+      return
+    }
+    if trip.stoppedAt == nil { trip.stoppedAt = now }
+    guard trackStop else { return }
+    if isStandstillFix(sample) {
+      // First good standstill fix wins; later in-car GPS drift does not move the stop point.
+      if !(trip.lastStopFix.map(isStandstillFix) ?? false) { trip.lastStopFix = sample }
+    } else if isVehicleSpeed(sample), !(trip.lastStopFix.map(isStandstillFix) ?? false) {
+      // Provisional stop point while slowing down: keep the most accurate one.
+      if let current = trip.lastStopFix, sample.accuracy < 0 || (current.accuracy >= 0 && current.accuracy <= sample.accuracy) {
+        return
+      }
+      trip.lastStopFix = sample
+    }
+    // Walking-speed fixes (stoppedSpeed < speed <= maxWalkingSpeed) never become the stop point.
+  }
+
   // MARK: Park point selection
 
   func isGoodFix(_ s: LocationSample) -> Bool {
     s.accuracy >= 0 && s.accuracy <= config.goodAccuracy
   }
 
-  /// High only for a good-accuracy fix taken at most `maxCandidateAge` before the walking start.
-  func confidence(of candidate: LocationSample, walkingSince: Date) -> Confidence {
-    let age = walkingSince.timeIntervalSince(candidate.timestamp)
-    return isGoodFix(candidate) && age >= 0 && age <= config.maxCandidateAge ? .high : .low
+  /// Good accuracy, car standing still.
+  func isStandstillFix(_ s: LocationSample) -> Bool {
+    isGoodFix(s) && s.speed >= 0 && s.speed <= config.stoppedSpeed
   }
 
-  /// Park candidate for an automotive → walking transition at `transitionAt`:
-  /// 1. the last good-accuracy fix at or before the transition (buffer + anchor),
+  /// Faster than walking: the fix was taken in a moving vehicle.
+  func isVehicleSpeed(_ s: LocationSample) -> Bool {
+    s.speed > config.maxWalkingSpeed
+  }
+
+  /// Order of events, not age (DECISIONS "Park noktası"): high only for a good fix taken with
+  /// the car standing still. A candidate taken while still moving means GPS degraded or was
+  /// lost before the car stopped (indoor car park) → low.
+  func confidence(of candidate: LocationSample) -> Confidence {
+    isStandstillFix(candidate) ? .high : .low
+  }
+
+  /// Park candidate for an automotive → walking transition at `transitionAt`, from the buffer,
+  /// the stop fix and the moving-only anchor:
+  /// 1. the last good-accuracy fix at or before the transition,
   /// 2. else the most accurate fix before it (confidence will be low),
-  /// 3. else the earliest known fix (all fixes are after the transition; low confidence).
+  /// 3. else the stop fix, else the anchor (both vehicle fixes, even if after the transition).
+  /// Fixes after the transition are never picked from the buffer: they are walking fixes.
   func pickCandidate(_ trip: Trip, transitionAt: Date) -> LocationSample? {
-    let pool = (trip.anchor.map { [$0] } ?? []) + trip.buffer
+    var pool: [LocationSample] = []
+    for s in [trip.anchor, trip.lastStopFix].compactMap({ $0 }) + trip.buffer where !pool.contains(s) {
+      pool.append(s)
+    }
+    pool.sort { $0.timestamp < $1.timestamp }
     let before = pool.filter { $0.timestamp <= transitionAt }
     if let good = before.last(where: isGoodFix) { return good }
     let valid = before.filter { $0.accuracy >= 0 }
     // Latest among equally accurate fixes.
     if let best = valid.reversed().min(by: { $0.accuracy < $1.accuracy }) { return best }
     if let any = before.last { return any }
-    return pool.first
+    return trip.lastStopFix ?? trip.anchor
   }
 
-  /// Ring buffer of `bufferWindow` seconds. The newest good fix that falls out becomes the anchor.
+  /// Ring buffer of `bufferWindow` seconds. The newest evicted good fix taken at vehicle speed
+  /// becomes the anchor; standstill and walking fixes never move it.
   private func append(_ sample: LocationSample, to trip: inout Trip) {
     let cutoff = sample.timestamp.addingTimeInterval(-config.bufferWindow)
     let all = trip.buffer + [sample]
     let evicted = all.filter { $0.timestamp < cutoff }
     trip.buffer = all.filter { $0.timestamp >= cutoff }
-    if let newest = evicted.last(where: isGoodFix),
+    if let newest = evicted.last(where: { isGoodFix($0) && isVehicleSpeed($0) }),
        trip.anchor.map({ newest.timestamp >= $0.timestamp }) ?? true {
       trip.anchor = newest
     }

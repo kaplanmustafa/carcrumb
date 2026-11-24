@@ -33,6 +33,7 @@ export type ServiceSessionDiagnostics = {
   authorizationDeniedGlobally: boolean;
   authorizationRestricted: boolean;
   insufficientlyInUse: boolean;
+  serviceSessionRequired: boolean;
   fullAccuracyDenied: boolean;
   alwaysAuthorizationDenied: boolean;
   authorizationRequestInProgress: boolean;

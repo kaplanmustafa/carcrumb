@@ -302,6 +302,7 @@ final class DetectionReducerTests: XCTestCase {
     ])
   }
 
+  /// (Stop model: the clock and the trip end start at the first fix below driving speed, t+20.)
   func testDrivingHardTimeoutWithoutCarLinkIsUncertain() {
     // Karar B would end a link-less trip at 15 min; lift it to reach the hard-cap branch alone.
     var config = DetectionConfig()
@@ -311,14 +312,14 @@ final class DetectionReducerTests: XCTestCase {
       (0, .wake(.significantLocationChange)),
       (10, .location(sample(41.0, 29.0, speed: 10, at: 10))),
       (20, .location(sample(41.0, 29.0, speed: 0, at: 20))),
-      (10 + 3599, .tick),
+      (20 + 3599, .tick),
     ]
     var state = DetectionState.idle
     for (s, e) in events { state = r.reduce(state, e, now: at(s)).0 }
     XCTAssertEqual(state.name, "DRIVING", "one second before the hard cap")
-    let (final, fx) = r.reduce(state, .tick, now: at(10 + 3600))
+    let (final, fx) = r.reduce(state, .tick, now: at(20 + 3600))
     XCTAssertEqual(final, .idle)
-    XCTAssertEqual(fx, [.stopGPS, .endTrip(status: .uncertain, endedAt: at(10))])
+    XCTAssertEqual(fx, [.stopGPS, .endTrip(status: .uncertain, endedAt: at(20))])
   }
 
   func testDrivingStationaryWithoutCarLinkParksLowAtStopPoint() {
@@ -332,6 +333,7 @@ final class DetectionReducerTests: XCTestCase {
     XCTAssertTrue(effects.contains(.endTrip(status: .confirmed, endedAt: at(598))))
   }
 
+  /// Behaviour change: trip end = when the car stopped (t+20), was the last fast fix (t+10).
   func testDrivingStationaryWithoutAnyCarLinkIsUncertain() {
     let (state, effects) = run([
       (0, .wake(.significantLocationChange)),
@@ -340,7 +342,97 @@ final class DetectionReducerTests: XCTestCase {
       (920, .tick),
     ])
     XCTAssertEqual(state, .idle)
-    XCTAssertEqual(Array(effects.suffix(2)), [.stopGPS, .endTrip(status: .uncertain, endedAt: at(10))])
+    XCTAssertEqual(Array(effects.suffix(2)), [.stopGPS, .endTrip(status: .uncertain, endedAt: at(20))])
+  }
+
+  // MARK: Movement evidence = GPS driving speed only
+
+  func testAutomotiveFlickerDoesNotResetStationaryClock() {
+    var events = driveToStop(linkDropsAt: nil)
+    for m in stride(from: 900.0, through: 4100, by: 300) {
+      events.append((m, .motion(.automotive)))
+      events.append((m + 150, .motion(.stationary)))
+    }
+    events.append((598 + 3600, .tick))
+    let (state, effects) = run(events)
+    XCTAssertEqual(state.name, "PARKED", "idling vibration must not keep GPS on past the hard cap")
+    XCTAssertTrue(effects.contains(.endTrip(status: .confirmed, endedAt: at(598))))
+  }
+
+  func testWakeAndWalkingSpeedAreNotMovement() {
+    let (state, _) = run(driveToStop() + [
+      (700, .wake(.significantLocationChange)),
+      (800, .location(sample(41.0, 29.0, speed: 2.0, at: 800))), // creeping / walking speed
+      (900, .wake(.visit)),
+      (598 + 900, .tick),
+    ])
+    XCTAssertEqual(state.name, "PARKED", "Karar B still counts from the stop at t+598")
+  }
+
+  func testDrivingSpeedResetsStopAndClock() {
+    let (state, _) = run(driveToStop() + [
+      (700, .location(sample(41.002, 29.002, speed: 8, at: 700))),
+      (598 + 900, .tick), // would have fired without the t+700 movement
+    ])
+    guard case let .driving(trip) = state else { return XCTFail("got \(state.name)") }
+    XCTAssertEqual(trip.lastMovingAt, at(700))
+    XCTAssertNil(trip.stoppedAt)
+    XCTAssertNil(trip.lastStopFix)
+  }
+
+  // MARK: Stop point
+
+  func testStopPointIsFirstStandstillFixNotLaterDrift() {
+    let (state, _) = run(driveToStop(linkDropsAt: nil) + [
+      (660, .location(sample(41.00003, 29.0, speed: 0.2, at: 660))),
+      (720, .location(sample(41.00006, 29.0, speed: 0.1, at: 720))),
+    ])
+    guard case let .driving(trip) = state else { return XCTFail("got \(state.name)") }
+    XCTAssertEqual(trip.lastStopFix, sample(41.0, 29.0, speed: 0, at: 600))
+    XCTAssertEqual(trip.stoppedAt, at(598))
+  }
+
+  /// Walking report 96 s late: the ring buffer holds only walking fixes; the stop fix survives
+  /// (anchor only advances to vehicle-speed fixes), so the park point is still the stop.
+  func testVeryLateWalkingStillUsesStopFix() {
+    var events = driveToStop()
+    for i in 1...10 {
+      let s = 600 + Double(i) * 10
+      events.append((s, .location(sample(41.0 + Double(i) * 0.0001, 29.0, speed: 1.2, at: s, accuracy: 6))))
+    }
+    events.append((700, .motion(.walking, startedAt: at(604))))
+    let (state, effects) = run(events)
+    XCTAssertEqual(state.name, "PARKED")
+    XCTAssertEqual(parks(effects).first?.location, sample(41.0, 29.0, speed: 0, at: 600))
+    XCTAssertEqual(parks(effects).first?.confidence, .high)
+  }
+
+  // MARK: Park confidence by order of events
+
+  func testSittingInCarAfterStopKeepsHighConfidence() {
+    let (state, _) = run(driveToStop(linkDropsAt: 680) + [
+      // GPS silent for 90 s while the user sits in the car, then walks away.
+      (692, .motion(.walking, startedAt: at(690))),
+      (750, .location(sample(41.0005, 29.0, speed: 1.2, at: 750))),
+    ])
+    guard case let .parked(point) = state else { return XCTFail("got \(state.name)") }
+    XCTAssertEqual(point.location, sample(41.0, 29.0, speed: 0, at: 600))
+    XCTAssertEqual(point.confidence, .high)
+  }
+
+  func testGPSDegradedBeforeStopIsLowEvenIfRecent() {
+    let (state, _) = run([
+      (0, .carLink(connected: true)),
+      (10, .location(sample(41.01, 29.01, speed: 12, at: 10))),
+      (630, .location(sample(41.0, 29.0, speed: 3, at: 630, accuracy: 6))), // still rolling
+      (640, .location(sample(41.0003, 29.0004, speed: 1, at: 640, accuracy: 65))),
+      (645, .carLink(connected: false)),
+      (650, .motion(.walking)),
+      (760, .location(sample(41.0012, 29.0, speed: 1.2, at: 760, accuracy: 10))),
+    ])
+    guard case let .parked(point) = state else { return XCTFail("got \(state.name)") }
+    XCTAssertEqual(point.location.timestamp, at(630))
+    XCTAssertEqual(point.confidence, .low)
   }
 
   // MARK: Car link level

@@ -29,6 +29,8 @@ jobs:
         run: |
           bad=$(git ls-files fixtures/traces | grep -vE "^fixtures/traces/(synthetic_[^/]+|.gitkeep)$" || true)
           if [ -n "$bad" ]; then echo "Only synthetic_ traces may be committed:"; echo "$bad"; exit 1; fi
+      - name: Synthetic traces stay inside the synthetic coordinate box
+        run: node .github/scripts/check-synthetic-traces.mjs
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx jest --passWithNoTests --ci
@@ -65,7 +67,19 @@ jobs:
         run: npx expo prebuild -p ios --no-install --clean
       - name: Install pods
         working-directory: ios
-        run: pod install
+        # One retry: React Native artifact downloads occasionally reset mid-transfer.
+        run: pod install || { echo "pod install failed, retrying once"; pod install; }
+      - name: Debug trace recording is compiled out of Release
+        # TraceRecorder is guarded by `#if DEBUG`; the Release pod target must not define DEBUG.
+        run: |
+          flags() {
+            xcodebuild -project ios/Pods/Pods.xcodeproj -target CarCrumbDetection -configuration "$1" -showBuildSettings 2>/dev/null \
+              | awk -F' = ' '/ SWIFT_ACTIVE_COMPILATION_CONDITIONS = /{print $2}'
+          }
+          REL=$(flags Release); DBG=$(flags Debug)
+          echo "Release: '$REL'  Debug: '$DBG'"
+          if echo " $REL " | grep -qw DEBUG; then echo "DEBUG is defined in Release"; exit 1; fi
+          if ! echo " $DBG " | grep -qw DEBUG; then echo "DEBUG missing in Debug"; exit 1; fi
       - name: Build (no signing)
         run: |
           set -o pipefail

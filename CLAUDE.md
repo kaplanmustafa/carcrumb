@@ -12,7 +12,7 @@ Tüm ürün ve mimari kararları: `docs/DECISIONS.md`. Yeni bir işe başlamadan
   - `ios/Detection/` — saf tipler ve `DetectionReducer` (CoreLocation/CoreMotion import etmez)
   - `ios/Tests/` — XCTest; yalnızca macOS CI'da koşar
   - `src/`, `index.ts` — TS köprüsü; durum adları Swift'teki `DetectionState.name` ile aynı olmalı
-- `fixtures/traces/` — sensör kayıtları; gerçek kayıtlar git'e girmez, yalnızca `synthetic_*` (CI bunu zorlar)
+- `fixtures/traces/` — sensör kayıtları; gerçek kayıtlar git'e girmez, yalnızca `synthetic_*`; sentetik koordinatlar 41.0±0.1 / 29.0±0.1 kutusunda kalmalı (CI ikisini de zorlar)
 - Durum adları kodda İngilizce: IDLE, MAYBE_DRIVING, DRIVING, MAYBE_PARKED, PARKED (DECISIONS.md'deki Türkçe diyagramla birebir).
 
 ## Stack
