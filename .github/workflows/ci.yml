@@ -31,10 +31,12 @@ jobs:
 
   swift-core:
     name: Detection core (swift test)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Select newest Xcode 26+
+        run: ./.github/scripts/select-xcode.sh
       - name: Swift version
         run: swift --version
       - name: Test state machine
@@ -43,7 +45,7 @@ jobs:
 
   ios-build:
     name: iOS simulator build
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     needs: [js, swift-core]
     steps:
@@ -53,6 +55,8 @@ jobs:
           node-version: lts/*
           cache: npm
       - run: npm ci
+      - name: Select newest Xcode 26+
+        run: ./.github/scripts/select-xcode.sh
       - name: Generate native project
         run: npx expo prebuild -p ios --no-install --clean
       - name: Install pods
