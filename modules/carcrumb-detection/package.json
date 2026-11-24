@@ -1,0 +1,8 @@
+{
+  "name": "carcrumb-detection",
+  "version": "0.1.0",
+  "description": "CarCrumb trip and parking detection (Swift)",
+  "main": "index.ts",
+  "private": true,
+  "license": "UNLICENSED"
+}
