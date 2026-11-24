@@ -74,11 +74,16 @@ public struct DetectionConfig: Equatable, Sendable {
   /// stopped (indoor car park ramps): the point is kept but confidence is low.
   public var maxCandidateAge: TimeInterval = 30
   /// Karar A: MAYBE_PARKED without confirmation for this long (from the walking start) ends
-  /// the trip: low-confidence park with car link, `uncertain` without.
+  /// the trip: low-confidence park with car link, `uncertain` without. If the car link is
+  /// still connected at that point, no park: the trip returns to DRIVING.
   public var maybeParkedTimeout: TimeInterval = 10 * 60
   /// Karar B: DRIVING without movement for this long AND without a connected car link ends
   /// the trip at the stop point (phone left in the car).
   public var drivingStationaryTimeout: TimeInterval = 15 * 60
+  /// Absolute cap: DRIVING without movement for this long ends the trip even with the car
+  /// link still connected (engine idling / CarPlay left on). Same closing as Karar B:
+  /// low park at the stop point with car link, `uncertain` without; end = last movement.
+  public var drivingHardStationaryTimeout: TimeInterval = 60 * 60
   /// GPS speed (m/s) at or above which a DRIVING sample counts as movement for Karar B.
   public var movingSpeed: Double = 1.0
 

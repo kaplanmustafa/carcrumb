@@ -12,8 +12,10 @@ import Foundation
 /// - Park point = last good-accuracy buffered location before the walking start reported by
 ///   Core Motion (not the last GPS fix, not the time the event arrived). Stale or inaccurate
 ///   candidates are kept but flagged low confidence.
-/// - Timeouts (Karar A/B): MAYBE_PARKED ends after `maybeParkedTimeout`; DRIVING ends after
-///   `drivingStationaryTimeout` without movement once the car link is gone. GPS never stays
+/// - Timeouts (Karar A/B): MAYBE_PARKED ends after `maybeParkedTimeout` (back to DRIVING if the
+///   car link is still connected); DRIVING ends after `drivingStationaryTimeout` without
+///   movement once the car link is gone, and after `drivingHardStationaryTimeout` without
+///   movement even with the link connected. GPS never stays
 ///   on without a bound on a stationary phone.
 /// - A trip without a car link ends as `uncertain` and writes no parking.
 /// - The geofence only changes with a new park (Karar D); the reducer never clears it.
@@ -104,6 +106,8 @@ public struct DetectionReducer: Sendable {
         }
         // The walking start may lie in the past; the timeout counts from it.
         if now.timeIntervalSince(transition) >= config.maybeParkedTimeout {
+          // Car link still connected: not a park (Karar C); stay in DRIVING.
+          if trip.carLinkConnected { return checkDrivingTimeout(trip, now: now) }
           return maybeParkedTimedOut(trip, candidate: candidate, walkingSince: transition)
         }
         return (next, [])
@@ -119,10 +123,13 @@ public struct DetectionReducer: Sendable {
 
   /// Karar B: no movement for `drivingStationaryTimeout` and no car link → trip over, park at
   /// the stop point with low confidence (phone left in the car; never saw walking).
+  /// Hard cap: no movement for `drivingHardStationaryTimeout` ends the trip even with the car
+  /// link still connected (engine idling, CarPlay left on), so GPS is never on without bound.
   private func checkDrivingTimeout(_ trip: Trip, now: Date) -> (DetectionState, [Effect]) {
-    guard !trip.carLinkConnected,
-          now.timeIntervalSince(trip.lastMovingAt) >= config.drivingStationaryTimeout
-    else { return (.driving(trip), []) }
+    let stationaryFor = now.timeIntervalSince(trip.lastMovingAt)
+    let linkLostTimeout = !trip.carLinkConnected && stationaryFor >= config.drivingStationaryTimeout
+    let hardTimeout = stationaryFor >= config.drivingHardStationaryTimeout
+    guard linkLostTimeout || hardTimeout else { return (.driving(trip), []) }
     return closeAtStopPoint(trip)
   }
 
@@ -192,6 +199,9 @@ public struct DetectionReducer: Sendable {
     }
 
     if now.timeIntervalSince(walkingSince) >= config.maybeParkedTimeout {
+      // Car link still connected after 10 min: no park (Karar C); back to the same trip in
+      // DRIVING. Karar B and the hard cap bound GPS from there.
+      if trip.carLinkConnected { return checkDrivingTimeout(trip, now: now) }
       return maybeParkedTimedOut(trip, candidate: candidate, walkingSince: walkingSince)
     }
     return (.maybeParked(trip: trip, candidate: candidate, walkingSince: walkingSince), [])

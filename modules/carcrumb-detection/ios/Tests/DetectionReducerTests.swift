@@ -239,6 +239,33 @@ final class DetectionReducerTests: XCTestCase {
     ])
   }
 
+  /// Car link still connected when the 10 min run out: no park, same trip back in DRIVING
+  /// (no second beginTrip, GPS stays on); the hard cap ends it later at the stop point.
+  func testMaybeParkedTimeoutWithCarLinkConnectedReturnsToDriving() {
+    let events = driveToStop(linkDropsAt: nil) + [
+      (605, .motion(.walking)),
+      (1205, .tick),
+    ]
+    let (state, effects) = run(events)
+    XCTAssertEqual(state.name, "DRIVING")
+    XCTAssertTrue(parks(effects).isEmpty)
+    XCTAssertEqual(effects, [.startGPS, .beginTrip(startedAt: t0)], "no stopGPS, no endTrip, no new trip")
+
+    let (later, laterFx) = run(events + [(598 + 3600, .tick)])
+    XCTAssertEqual(later.name, "PARKED")
+    XCTAssertEqual(parks(laterFx).first?.confidence, .low)
+    XCTAssertTrue(laterFx.contains(.endTrip(status: .confirmed, endedAt: at(598))))
+  }
+
+  /// Late walking report whose start is already > 10 min ago, link still connected: stays DRIVING.
+  func testLateWalkingPastTimeoutWithCarLinkConnectedStaysDriving() {
+    let (state, effects) = run(driveToStop(linkDropsAt: nil) + [
+      (1300, .motion(.walking, startedAt: at(604))),
+    ])
+    XCTAssertEqual(state.name, "DRIVING")
+    XCTAssertTrue(parks(effects).isEmpty)
+  }
+
   func testMaybeParkedTimeoutWithoutCarLinkIsUncertain() {
     let (state, effects) = run([
       (0, .wake(.significantLocationChange)),
@@ -253,9 +280,45 @@ final class DetectionReducerTests: XCTestCase {
 
   // MARK: Karar B – DRIVING stationary timeout
 
+  /// Behaviour change (hard cap): was a 3600 s tick; at 60 min the trip now ends, so the last
+  /// tick that must keep DRIVING is one second earlier.
   func testDrivingStationaryWithCarLinkConnectedKeepsDriving() {
-    let (state, _) = run(driveToStop(linkDropsAt: nil) + [(598 + 3600, .tick)])
-    XCTAssertEqual(state.name, "DRIVING", "car still connected (engine on): not a park")
+    let (state, _) = run(driveToStop(linkDropsAt: nil) + [(598 + 3599, .tick)])
+    XCTAssertEqual(state.name, "DRIVING", "car still connected (engine on): not a park before the hard cap")
+  }
+
+  // MARK: Hard cap – DRIVING 60 min without movement, car link connected or not
+
+  func testDrivingHardTimeoutWithCarLinkConnectedParksLowAtStopPoint() {
+    let (state, effects) = run(driveToStop(linkDropsAt: nil) + [(598 + 3600, .tick)])
+    guard case let .parked(point) = state else { return XCTFail("got \(state.name)") }
+    let stop = sample(41.0, 29.0, speed: 0, at: 600)
+    XCTAssertEqual(point, ParkPoint(location: stop, confidence: .low, parkedAt: at(598)))
+    XCTAssertEqual(Array(effects.suffix(4)), [
+      .stopGPS,
+      .endTrip(status: .confirmed, endedAt: at(598)),
+      .saveParking(point),
+      .setGeofence(center: stop, radius: 150),
+    ])
+  }
+
+  func testDrivingHardTimeoutWithoutCarLinkIsUncertain() {
+    // Karar B would end a link-less trip at 15 min; lift it to reach the hard-cap branch alone.
+    var config = DetectionConfig()
+    config.drivingStationaryTimeout = 2 * 3600
+    let r = DetectionReducer(config: config)
+    let events: [(TimeInterval, DetectionEvent)] = [
+      (0, .wake(.significantLocationChange)),
+      (10, .location(sample(41.0, 29.0, speed: 10, at: 10))),
+      (20, .location(sample(41.0, 29.0, speed: 0, at: 20))),
+      (10 + 3599, .tick),
+    ]
+    var state = DetectionState.idle
+    for (s, e) in events { state = r.reduce(state, e, now: at(s)).0 }
+    XCTAssertEqual(state.name, "DRIVING", "one second before the hard cap")
+    let (final, fx) = r.reduce(state, .tick, now: at(10 + 3600))
+    XCTAssertEqual(final, .idle)
+    XCTAssertEqual(fx, [.stopGPS, .endTrip(status: .uncertain, endedAt: at(10))])
   }
 
   func testDrivingStationaryWithoutCarLinkParksLowAtStopPoint() {
