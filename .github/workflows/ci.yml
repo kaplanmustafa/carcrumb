@@ -25,6 +25,10 @@ jobs:
         with:
           node-version: lts/*
           cache: npm
+      - name: Block real sensor traces (raw coordinates)
+        run: |
+          bad=$(git ls-files fixtures/traces | grep -vE "^fixtures/traces/(synthetic_[^/]+|.gitkeep)$" || true)
+          if [ -n "$bad" ]; then echo "Only synthetic_ traces may be committed:"; echo "$bad"; exit 1; fi
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx jest --passWithNoTests --ci

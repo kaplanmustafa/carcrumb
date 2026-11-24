@@ -67,10 +67,16 @@ Trafikte duran araç "Olası park"tan "Sürüş"e geri döner; park ancak yürü
 - **Gerçek başlangıç:** Uyanınca `queryActivityStarting` ile son 7 günün hareket kaydından sürüşün gerçek başlangıcı geriye dönük bulunur.
 - **Sürüş sırasında:** `CLLocationUpdate.liveUpdates(.automotiveNavigation)` + `CLBackgroundActivitySession`. Mavi gösterge yalnızca bu sırada yanar.
 - **Trafik ile park ayrımı:** Kırmızı ışıkta `automotive` ve `stationary` birlikte true gelir; karar süreye değil, yürüme başlangıcı + 30–50 m uzaklaşmaya dayanır.
-- **Park noktası:** Son GPS noktası değil; son ~60 sn'lik halka tamponda `automotive → walking` geçiş anındaki konum.
+- **Park noktası:** Son GPS noktası değil; son ~60 sn'lik halka tamponda `automotive → walking` geçiş anındaki konum. Geçiş anı, Core Motion'ın bildirdiği yürüme başlangıç zamanıdır (olayın ulaştığı an değil). Tamponda o andan önceki, doğruluğu iyi olan son nokta seçilir; aday nokta bayatsa (GPS kaybı) güven düşük olur.
+- **Park onayı:** Son hareket yürüme olmalı, hız ~2,5 m/s altında olmalı ve uzaklık, konum doğruluk payı düşüldükten sonra 30–50 m eşiğini geçmeli.
+- **Zaman aşımları (24 Kasım 2026):** Olası parkta 10 dk boyunca araç hareketi yoksa park düşük güvenle yazılır (araç bağlantısı yoksa yolculuk "belirsiz" kapanır). Sürüşte 15 dk hareketsizlik + araç bağlantısının kopması sürüş sonu sayılır; park duruş noktasına düşük güvenle yazılır (telefonu araçta unutma). GPS hiçbir durumda süresiz açık kalmaz.
 - **Araç sinyali:** İlk 2–3 yolculuktan sonra ortak Bluetooth cihazı önerilir ("Bu senin araban mı?"). `.carAudio` veya kayıtlı araç portu güveni artırır; kopması güçlü bitiş sinyalidir.
 - **Hata dengesi:** Düşük güvenli park kaydı yüksek güvenlinin üzerine yazılmaz; son 3 park noktası tutulur. Araç bağlantısı olmayan yolculuk "belirsiz" kaydedilir, onaylanana kadar istatistiğe girmez ve park yazmaz.
+- **Geofence:** Park geofence'i yalnızca yeni bir park yazılınca değişir; bağlantısız ("belirsiz") bir yolculuk onu silmez.
+- **Durum geri yükleme:** Olası parkta kalmış ve araç bağlantısı olan yolculuk, geri yüklemede süresi ne olursa olsun düşük güvenli park olarak kapanır.
 - **Kurtarma:** Uygulama uzun süre uyanamadıysa, açılışta 7 günlük hareket geçmişinden kaçırılan yolculuklar rotasız, "kurtarılan" etiketiyle çıkarılır.
+
+**Geçmişi silme kontrol listesi:** SQLite satırları + `VACUUM` + WAL checkpoint, motor durum dosyası (`state.json`) silinip motor IDLE'a alınır, CLMonitor park koşulu kaldırılır, debug kayıt dizini (`traces/`) silinir.
 
 ## Teknik kararlar
 
