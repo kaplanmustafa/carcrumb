@@ -9,7 +9,7 @@ import Foundation
 /// - A stop in traffic is never parking: parking needs walking AND moving
 ///   `parkConfirmDistance` away from the stop point (minus the sample's accuracy), at walking
 ///   speed, with the car link disconnected. Duration alone never confirms a high-confidence park.
-/// - Movement evidence is a GPS fix at driving speed only. Walking speed and a bare Core Motion
+/// - Movement evidence is a GPS fix at vehicle speed (> `maxWalkingSpeed`, slow traffic included); driving confirmation separately needs `drivingSpeed`. Walking speed and a bare Core Motion
 ///   `automotive` (idling engine vibration) do not reset the stationary clock.
 /// - Park point = last good-accuracy fix at or before the walking start reported by Core Motion,
 ///   taken from the ring buffer, the stop point (`lastStopFix`) and the moving-only anchor.
@@ -67,7 +67,8 @@ public struct DetectionReducer: Sendable {
       // Speed confirms driving. True start time is refined later from Core Motion history
       // (queryActivityStarting), outside the reducer. No clearGeofence here (Karar D).
       let trip = Trip(startedAt: since, hadCarLink: carLink, buffer: [sample],
-                      carLinkConnected: carLink, lastMovingAt: now)
+                      carLinkConnected: carLink, lastMovingAt: now,
+                      lastStopFix: isGoodFix(sample) ? sample : nil, lastApproachFix: sample)
       return (.driving(trip), [.beginTrip(startedAt: since)])
     case let .carLink(connected):
       return (.maybeDriving(since: since, carLink: connected), [])
@@ -255,25 +256,32 @@ public struct DetectionReducer: Sendable {
   /// Appends a fix and updates the movement / stop bookkeeping.
   private func ingest(_ sample: LocationSample, into trip: inout Trip, now: Date, trackStop: Bool = true) {
     append(sample, to: &trip)
-    if sample.speed >= config.drivingSpeed {
-      // Moving: the previous stop (red light, jam) is over.
+    let standstill = isStandstillFix(sample)
+    defer { if !standstill { trip.lastApproachFix = sample } }
+
+    if isVehicleSpeed(sample) {
+      // Moving (slow traffic included): any previous stop (red light, jam) is over, and the
+      // stationary clock restarts. Provisional stop point = latest good vehicle fix.
       trip.lastMovingAt = now
       trip.stoppedAt = nil
-      trip.lastStopFix = nil
+      if isGoodFix(sample) {
+        trip.lastStopFix = sample
+      } else if trip.lastStopFix.map(isStandstillFix) ?? false {
+        trip.lastStopFix = nil // the old standstill is stale; no good vehicle fix to replace it
+      }
       return
     }
+    // At or below walking speed (or unknown speed): not movement evidence.
     if trip.stoppedAt == nil { trip.stoppedAt = now }
-    guard trackStop else { return }
-    if isStandstillFix(sample) {
-      // First good standstill fix wins; later in-car GPS drift does not move the stop point.
-      if !(trip.lastStopFix.map(isStandstillFix) ?? false) { trip.lastStopFix = sample }
-    } else if isVehicleSpeed(sample), !(trip.lastStopFix.map(isStandstillFix) ?? false) {
-      // Provisional stop point while slowing down: keep the most accurate one.
-      if let current = trip.lastStopFix, sample.accuracy < 0 || (current.accuracy >= 0 && current.accuracy <= sample.accuracy) {
-        return
-      }
-      trip.lastStopFix = sample
+    guard trackStop, standstill else { return }
+    // First accepted standstill wins; later in-car GPS drift does not move the stop point.
+    guard !(trip.lastStopFix.map(isStandstillFix) ?? false) else { return }
+    // Only where the car plausibly is: near the last non-standstill fix. A standstill fix
+    // far from it (GPS lost in a car park, phone later on a desk) is not the car.
+    if let approach = trip.lastApproachFix, sample.distance(to: approach) >= config.parkConfirmDistance {
+      return
     }
+    trip.lastStopFix = sample
     // Walking-speed fixes (stoppedSpeed < speed <= maxWalkingSpeed) never become the stop point.
   }
 

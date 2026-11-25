@@ -213,6 +213,23 @@ final class ScenarioTraceTests: XCTestCase {
     ])
   }
 
+  // MARK: Slow traffic (3–4 m/s, below drivingSpeed) for 20 min is still driving (B1)
+
+  func testSlowTraffic20MinWithoutCarLinkStaysDriving() throws {
+    let result = try replay("synthetic_slow_traffic_20min_no_carlink.jsonl")
+    XCTAssertEqual(result.finalState.name, "DRIVING", "15 min Karar B must not fire while crawling")
+    XCTAssertEqual(result.effects, [.startGPS, .beginTrip(startedAt: t0)])
+    XCTAssertFalse(result.effects.contains(.stopGPS))
+    XCTAssertTrue(tripEnds(result.effects).isEmpty)
+  }
+
+  func testSlowTraffic20MinWithCarLinkWritesNoPark() throws {
+    let result = try replay("synthetic_slow_traffic_20min_carlink.jsonl")
+    XCTAssertEqual(result.finalState.name, "DRIVING")
+    XCTAssertEqual(result.effects, [.startGPS, .beginTrip(startedAt: t0)])
+    XCTAssertTrue(parkings(result.effects).isEmpty)
+  }
+
   // MARK: Phone left in the car → no walking, parking late but correct
 
   func testPhoneLeftInCarNeverParksAtAWrongPoint() throws {

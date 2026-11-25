@@ -138,18 +138,18 @@ public final class DetectionEngine: @unchecked Sendable {
     // and park confirmation, which depend on the car link level. Re-read it first so they never
     // run on a stale level. (Chosen over treating wake as movement evidence: SLC / visit are
     // coarse, also fire at standstill, and would reset the stationary clock while idling.)
+    // A walking report may confirm a park right away (late report, Karar C needs the level),
+    // so it is synced before reducing as well.
     switch event {
-    case .wake, .tick:
+    case .wake, .tick, .motion(.walking, _), .motion(.running, _):
       syncCarLinkLevel(now: now)
     default:
       break
     }
     let effects = reduceAndApply(event, now: now)
-    // After reducing: a GPS start (IDLE/PARKED → MAYBE_DRIVING creates the state with
-    // carLink=false) and a walking report (about to confirm a park: Karar C needs the level).
+    // After reducing: only a GPS start (IDLE/PARKED → MAYBE_DRIVING creates the state with
+    // carLink=false, so the level is unknown until it exists).
     if effects.contains(.startGPS) {
-      syncCarLinkLevel(now: now)
-    } else if case .motion(let activity, _) = event, activity == .walking || activity == .running {
       syncCarLinkLevel(now: now)
     }
   }

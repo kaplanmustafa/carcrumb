@@ -377,7 +377,67 @@ final class DetectionReducerTests: XCTestCase {
     guard case let .driving(trip) = state else { return XCTFail("got \(state.name)") }
     XCTAssertEqual(trip.lastMovingAt, at(700))
     XCTAssertNil(trip.stoppedAt)
-    XCTAssertNil(trip.lastStopFix)
+    // Behaviour change (B1): was nil; the provisional stop point is now the latest good
+    // vehicle fix, so the old standstill at t+600 is replaced.
+    XCTAssertEqual(trip.lastStopFix, sample(41.002, 29.002, speed: 8, at: 700))
+  }
+
+  // MARK: B1 – slow traffic (vehicle speed below drivingSpeed) is movement
+
+  func testSlowTrafficWithoutCarLinkKeepsDriving() {
+    var events: [(TimeInterval, DetectionEvent)] = [
+      (0, .wake(.significantLocationChange)),
+      (10, .location(sample(41.05, 29.0, speed: 8, at: 10))),
+    ]
+    // 20 min crawling at 3–4 m/s (10–15 km/h), one fix every 30 s, plus ticks.
+    for i in 1...40 {
+      let s = 10 + Double(i) * 30
+      events.append((s, .location(sample(41.05 - Double(i) * 0.001, 29.0, speed: i % 2 == 0 ? 3.0 : 4.0, at: s))))
+      events.append((s + 15, .tick))
+    }
+    let (state, effects) = run(events)
+    XCTAssertEqual(state.name, "DRIVING")
+    XCTAssertEqual(effects, [.startGPS, .beginTrip(startedAt: t0)], "no stopGPS / endTrip in slow traffic")
+  }
+
+  func testProvisionalStopPointIsLatestGoodVehicleFixNotMostAccurate() {
+    let (state, _) = run([
+      (0, .carLink(connected: true)),
+      (10, .location(sample(41.01, 29.01, speed: 12, at: 10, accuracy: 4))),
+      (20, .location(sample(41.009, 29.01, speed: 3, at: 20, accuracy: 15))),
+    ])
+    guard case let .driving(trip) = state else { return XCTFail("got \(state.name)") }
+    XCTAssertEqual(trip.lastStopFix, sample(41.009, 29.01, speed: 3, at: 20, accuracy: 15))
+  }
+
+  // MARK: N1 – standstill far from the car is not the stop point
+
+  /// GPS lost while driving into a car park (last vehicle fix at the entrance), no motion
+  /// permission (no walking events). Later the phone lies still on a desk ~200 m away and GPS
+  /// returns: those standstill fixes must not become the stop point; Karar B parks at the
+  /// entrance (low).
+  func testStandstillFarFromLastVehicleFixIsNotTheStopPoint() {
+    let entrance = sample(41.0, 29.0, speed: 6, at: 600)
+    var events: [(TimeInterval, DetectionEvent)] = [
+      (0, .carLink(connected: true)),
+      (10, .location(sample(41.01, 29.01, speed: 12, at: 10))),
+      (600, .location(entrance)),
+      (605, .carLink(connected: false)),
+    ]
+    for s in stride(from: 1200.0, through: 2100, by: 60) {
+      events.append((s, .location(sample(41.0018, 29.0, speed: 0, at: s, accuracy: 10))))
+    }
+    let (state, effects) = run(events)
+    guard case let .parked(point) = state else { return XCTFail("got \(state.name)") }
+    XCTAssertEqual(point.location, entrance)
+    XCTAssertEqual(point.confidence, .low)
+    XCTAssertTrue(effects.contains(.endTrip(status: .confirmed, endedAt: at(1200))))
+  }
+
+  func testStandstillNearLastApproachFixIsAccepted() {
+    let (state, _) = run(driveToStop(linkDropsAt: nil))
+    guard case let .driving(trip) = state else { return XCTFail("got \(state.name)") }
+    XCTAssertEqual(trip.lastStopFix, sample(41.0, 29.0, speed: 0, at: 600), "8 m from the t+598 approach fix")
   }
 
   // MARK: Stop point
