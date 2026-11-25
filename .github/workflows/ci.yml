@@ -32,7 +32,7 @@ jobs:
       - name: Synthetic traces stay inside the synthetic coordinate box
         run: node .github/scripts/check-synthetic-traces.mjs
       - run: npm ci
-      - run: npx tsc --noEmit
+      - run: npm run typecheck
       - run: npx jest --passWithNoTests --ci
 
   swift-core:

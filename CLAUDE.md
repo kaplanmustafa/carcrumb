@@ -8,6 +8,8 @@ Tüm ürün ve mimari kararları: `docs/DECISIONS.md`. Yeni bir işe başlamadan
 
 ## Yapı
 - `App.tsx` — arayüz (şimdilik tek ekran)
+- `src/design/` — tasarım sistemi: `tokens.ts`, `components.tsx` (kurallar: `docs/DESIGN.md`)
+- `src/features/` — ekranlara özel mantık ve metinler (ör. `detection/presentation.ts`)
 - `modules/carcrumb-detection/` — yerel Expo modülü (yalnızca iOS)
   - `ios/Detection/` — saf tipler ve `DetectionReducer` (CoreLocation/CoreMotion import etmez)
   - `ios/Tests/` — XCTest; yalnızca macOS CI'da koşar
