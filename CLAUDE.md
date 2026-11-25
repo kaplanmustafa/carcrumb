@@ -4,7 +4,7 @@ iPhone'da araç yolculuklarını ve park konumunu ek donanım olmadan otomatik a
 Tüm ürün ve mimari kararları: `docs/DECISIONS.md`. Yeni bir işe başlamadan önce ilgili bölümünü oku; bir kararı değiştirmen gerekiyorsa önce kullanıcıya sor, sonra dosyayı güncelle.
 
 ## Durum
-İskelet kuruldu (Expo SDK 58, iOS 18 hedefi). Saf durum makinesi `modules/carcrumb-detection/ios/Detection/` altında; sensörler `ios/Sensors/`, motor `ios/Engine/` (seri kuyruk) altında bağlı, debug sensör kayıt modu var. GRDB deposu ve arayüz henüz yok (DetectionStore bellek içi). Sahada henüz test edilmedi. Önceki DriveMate kodu kullanılmıyor.
+İskelet kuruldu (Expo SDK 58, iOS 18 hedefi). Saf durum makinesi `modules/carcrumb-detection/ios/Detection/` altında; sensörler `ios/Sensors/`, motor `ios/Engine/` (seri kuyruk) altında bağlı, debug sensör kayıt modu var. Kalıcı depo GRDB ile `ios/Store/` altında (WAL, tek yazıcı Swift). Arayüz tasarım sistemiyle tek ekran. Sahada henüz test edilmedi. Önceki DriveMate kodu kullanılmıyor.
 
 ## Yapı
 - `App.tsx` — arayüz (şimdilik tek ekran)
@@ -12,7 +12,8 @@ Tüm ürün ve mimari kararları: `docs/DECISIONS.md`. Yeni bir işe başlamadan
 - `src/features/` — ekranlara özel mantık ve metinler (ör. `detection/presentation.ts`)
 - `modules/carcrumb-detection/` — yerel Expo modülü (yalnızca iOS)
   - `ios/Detection/` — saf tipler ve `DetectionReducer` (CoreLocation/CoreMotion import etmez)
-  - `ios/Tests/` — XCTest; yalnızca macOS CI'da koşar
+  - `ios/Store/` — GRDB deposu, şema/migration, `ParkingPolicy` (CoreLocation içermez)
+  - `ios/Tests/`, `ios/StoreTests/` — XCTest; yalnızca macOS CI'da koşar (`swift test`)
   - `src/`, `index.ts` — TS köprüsü; durum adları Swift'teki `DetectionState.name` ile aynı olmalı
 - `fixtures/traces/` — sensör kayıtları; gerçek kayıtlar git'e girmez, yalnızca `synthetic_*`; sentetik koordinatlar 41.0±0.1 / −40.0±0.1 kutusunda (Atlantik ortası, yerleşim yok) kalmalı (CI ikisini de zorlar)
 - Durum adları kodda İngilizce: IDLE, MAYBE_DRIVING, DRIVING, MAYBE_PARKED, PARKED (DECISIONS.md'deki Türkçe diyagramla birebir).

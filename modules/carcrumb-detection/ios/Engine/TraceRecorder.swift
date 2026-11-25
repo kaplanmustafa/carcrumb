@@ -106,6 +106,15 @@ final class TraceRecorder {
     #endif
   }
 
+  /// History deletion (docs/DECISIONS.md checklist): closes the open file and removes the
+  /// whole `traces/` directory, in debug and release. A debug build recreates it on the next
+  /// recorded event.
+  func deleteAll() throws {
+    close()
+    guard let dir = Self.existingDirectory() else { return }
+    try FileManager.default.removeItem(at: dir)
+  }
+
   #if DEBUG
   private func write(_ record: TraceRecord, at now: Date) {
     do {

@@ -26,7 +26,9 @@ import os
 /// when iOS relaunches the terminated app in the background for a location event (`.location`
 /// launch key). The module's `OnCreate` calls it too (idempotent) as a safety net.
 public final class DetectionEngine: @unchecked Sendable {
-  public static let shared = DetectionEngine(store: InMemoryDetectionStore())
+  /// SQLite store (Application Support/CarCrumb/carcrumb.sqlite). Opens lazily on the engine
+  /// queue at the first use, so creating it here never touches the disk.
+  public static let shared = DetectionEngine(store: GRDBDetectionStore())
 
   let queue = DispatchQueue(label: "app.carcrumb.detection.engine", qos: .utility)
 
@@ -38,6 +40,11 @@ public final class DetectionEngine: @unchecked Sendable {
   private let reducer = DetectionReducer()
   private var state: DetectionState = .idle
   private var tripID: Int64?
+  /// Reducer start of the open trip when `store.beginTrip` failed (database unavailable,
+  /// e.g. before the first unlock). The row is written in one go at `endTrip`
+  /// (`store.saveClosedTrip`, buffered by the store if still locked), so the trip and its park
+  /// are not lost. Memory only: lost if the process dies before the trip ends.
+  private var pendingTripStart: Date?
   /// End of the last closed trip; bounds the Core Motion history query of the next one.
   private var lastTripEndedAt: Date?
   private let store: DetectionStore
@@ -189,6 +196,12 @@ public final class DetectionEngine: @unchecked Sendable {
     state = restored
     lastTripEndedAt = persisted?.lastTripEndedAt
     tripID = restored.hasOpenTrip || effects.contains(where: \.isEndTrip) ? persisted?.tripID : nil
+    // Trips left open by a process death between beginTrip and the state save. The restored
+    // trip (`tripID`) is kept open here; if `effects` close it, their endTrip does that.
+    // Fails harmlessly while the database is unavailable (retried at the next launch).
+    do { try store.abandonOpenTrips(except: tripID) } catch {
+      log.error("store.abandonOpenTrips failed (\(Self.storeErrorName(error), privacy: .public))")
+    }
     log.info("restored state \(restored.name, privacy: .public) (persisted: \(persisted?.state.name ?? "none", privacy: .public))")
     apply(effects, now: now)
     didUpdateState(from: .idle, cause: "restore", now: now, forceNotify: true)
@@ -202,6 +215,10 @@ public final class DetectionEngine: @unchecked Sendable {
     // endTrip and saveParking come together (reducer: stopGPS, endTrip, saveParking,
     // setGeofence); saveParking must still see the trip that endTrip just closed.
     var closedTripID: Int64?
+    // Karar D: the park geofence moves only when a new park is written. When the store keeps
+    // a higher-confidence park instead (ParkingPolicy), the geofence stays where it is. A
+    // deferred write (database unavailable) still moves it: the park was detected.
+    var parkingRejected = false
     for effect in effects {
       log.debug("effect \(effect.logName, privacy: .public)")
       switch effect {
@@ -210,25 +227,49 @@ public final class DetectionEngine: @unchecked Sendable {
       case .stopGPS:
         onMain { $0.stopGPS() }
       case let .beginTrip(startedAt):
+        pendingTripStart = nil
         do {
           let id = try store.beginTrip(startedAt: startedAt)
           tripID = id
           refineTripStart(tripID: id, reducerStart: startedAt, confirmedAt: now)
         } catch {
-          log.error("store.beginTrip failed")
+          tripID = nil
+          pendingTripStart = startedAt
+          log.error("store.beginTrip failed (\(Self.storeErrorName(error), privacy: .public)); written at endTrip")
         }
       case let .endTrip(status, endedAt):
-        do { try store.endTrip(tripID: tripID, status: status, endedAt: endedAt) } catch {
-          log.error("store.endTrip failed")
+        if tripID == nil, let start = pendingTripStart {
+          // beginTrip could not write (e.g. locked since reboot): write the whole trip now.
+          // While the database is still unavailable the store buffers it and returns a
+          // provisional id; the park below is buffered with that id and linked at replay.
+          do {
+            closedTripID = try store.saveClosedTrip(startedAt: start, detectedAt: start, endedAt: endedAt, status: status)
+          } catch {
+            closedTripID = nil
+            log.error("store.saveClosedTrip failed (\(Self.storeErrorName(error), privacy: .public))")
+          }
+        } else {
+          do { try store.endTrip(tripID: tripID, status: status, endedAt: endedAt) } catch {
+            log.error("store.endTrip failed (\(Self.storeErrorName(error), privacy: .public))")
+          }
+          closedTripID = tripID
         }
-        closedTripID = tripID
+        pendingTripStart = nil
         tripID = nil
         lastTripEndedAt = endedAt
       case let .saveParking(point):
-        do { try store.saveParking(point, tripID: closedTripID ?? tripID) } catch {
-          log.error("store.saveParking failed")
+        do {
+          let outcome = try store.saveParking(point, tripID: closedTripID ?? tripID)
+          parkingRejected = !outcome.wasWritten
+          log.info("parking \(outcome.rawValue, privacy: .public)")
+        } catch {
+          log.error("store.saveParking failed (\(Self.storeErrorName(error), privacy: .public))")
         }
       case let .setGeofence(center, radius):
+        if parkingRejected {
+          log.info("geofence kept (parking not written)")
+          continue
+        }
         onMain { $0.setGeofence(center: center, radius: radius) }
       case .clearGeofence:
         onMain { $0.clearGeofence() }
@@ -316,6 +357,105 @@ public final class DetectionEngine: @unchecked Sendable {
   }
 
   // MARK: Bridge support
+
+  /// Runs a store read on the engine queue (the store is confined to it); `completion` is
+  /// called on that queue. Results may contain coordinates: callers must not log them.
+  public func readStore<T>(
+    _ body: @escaping (DetectionStore) throws -> T,
+    completion: @escaping (Result<T, Error>) -> Void
+  ) {
+    queue.async {
+      completion(Result { try body(self.store) })
+    }
+  }
+
+  /// "Geçmişi sil" (docs/DECISIONS.md, "Geçmişi silme kontrol listesi"), in this order:
+  /// 1. engine to IDLE in memory (GPS off, open trip dropped), so no event re-creates data,
+  /// 2. SQLite rows + VACUUM + WAL checkpoint(TRUNCATE) (`store.deleteAllHistory`),
+  /// 3. `state.json` deleted (it can hold the ring buffer = coordinates),
+  /// 4. CLMonitor park condition (`lastPark`) removed, awaited and verified: the completion
+  ///    is called only after the monitor answered; without a monitor (no location
+  ///    permission) the step succeeds (`GeofenceClearPolicy`),
+  /// 5. debug trace directory `traces/` deleted.
+  /// Every step runs even if an earlier one fails; the completion reports the first failure
+  /// in this order (step name only, never paths or coordinates). Runs on the engine queue, so
+  /// it is ordered with sensor events: events already queued are reduced before, later ones
+  /// start from IDLE. A park written after the deletion sets a new geofence after the removal
+  /// (the geofence operations run strictly in call order).
+  public func deleteAllHistory(completion: @escaping @Sendable (Result<Void, DeleteHistoryError>) -> Void) {
+    queue.async {
+      var databaseFailed = false
+      var stateFileFailed = false
+      var tracesFailed = false
+
+      // 1. Engine state. Not persisted here: state.json is deleted below and written again
+      //    (IDLE, no trip data) only at the next state change.
+      let old = self.state
+      self.state = .idle
+      self.tripID = nil
+      self.pendingTripStart = nil
+      self.lastTripEndedAt = nil
+      self.lastPersistAt = nil
+      if old.isGPSState { self.onMain { $0.stopGPS() } }
+
+      // 2. Database.
+      do { try self.store.deleteAllHistory() } catch { databaseFailed = true }
+
+      // 3. state.json.
+      do { try self.stateFile.delete() } catch { stateFileFailed = true }
+
+      // 5. Traces (before the asynchronous step 4).
+      do { try self.recorder.deleteAll() } catch { tracesFailed = true }
+
+      if old.name != self.state.name {
+        self.updateTickTimer()
+        let name = self.state.name
+        self.snapshotLock.lock(); self._stateName = name; self.snapshotLock.unlock()
+        self.observers.values.forEach { $0(name) }
+      }
+
+      // 4. Park geofence on the main actor, FIFO after the stopGPS above; completes after
+      //    CLMonitor answered. Without a monitor (konumsuz mod) the step succeeds; only a
+      //    condition that is provably still registered fails it (GeofenceClearPolicy).
+      let syncFailure: DeleteHistoryError? =
+        databaseFailed ? .database : stateFileFailed ? .stateFile : nil
+      let tracesFailure: DeleteHistoryError? = tracesFailed ? .traces : nil
+      let finish: @Sendable (GeofenceClearResult) -> Void = { result in
+        self.queue.async {
+          let geofenceFailure: DeleteHistoryError? = GeofenceClearPolicy.succeeded(result) ? nil : .geofence
+          let failure: DeleteHistoryError? = syncFailure ?? geofenceFailure ?? tracesFailure
+          self.log.info("history deleted (was \(old.name, privacy: .public), geofence: \(result.rawValue, privacy: .public), failed step: \(failure?.rawValue ?? "none", privacy: .public))")
+          completion(failure.map { .failure($0) } ?? .success(()))
+        }
+      }
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          guard let location = self.location else {
+            // Engine not started: this process never opened the monitor, so it cannot have
+            // registered a condition through it (see GeofenceClearPolicy).
+            finish(.monitorUnavailable)
+            return
+          }
+          Task { @MainActor in
+            finish(await location.clearGeofenceVerified())
+          }
+        }
+      }
+    }
+  }
+
+  /// Which step of history deletion failed (no paths, no error text).
+  /// `geofence`: the monitor is open but still lists the `lastPark` condition after removal.
+  /// Not used when the monitor cannot be opened (no location permission): see
+  /// `GeofenceClearPolicy`.
+  public enum DeleteHistoryError: String, Error {
+    case database, stateFile, geofence, traces
+  }
+
+  /// Error kind for logs: never the error text (it can contain the container path).
+  static func storeErrorName(_ error: Error) -> String {
+    (error as? StoreError) == .unavailable ? "unavailable" : "error"
+  }
 
   /// Observer is called on the engine queue with the new state name. Returns a token.
   public func addStateObserver(_ observer: @escaping @Sendable (String) -> Void) -> UUID {

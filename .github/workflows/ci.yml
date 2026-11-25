@@ -78,9 +78,15 @@ jobs:
       - name: Debug trace recording is compiled out of Release
         # TraceRecorder is guarded by `#if DEBUG`; the Release pod target must not define DEBUG.
         run: |
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          # The pod target has an SPM dependency (GRDB), so query it through the workspace
+          # (packages resolve there); fall back to the Pods project. Errors stay visible.
+          settings() {
+            xcodebuild -workspace "$WORKSPACE" -scheme CarCrumbDetection -configuration "$1" -showBuildSettings \
+              || xcodebuild -project ios/Pods/Pods.xcodeproj -target CarCrumbDetection -configuration "$1" -showBuildSettings
+          }
           flags() {
-            xcodebuild -project ios/Pods/Pods.xcodeproj -target CarCrumbDetection -configuration "$1" -showBuildSettings 2>/dev/null \
-              | awk -F' = ' '/ SWIFT_ACTIVE_COMPILATION_CONDITIONS = /{print $2}'
+            settings "$1" | awk -F' = ' '/ SWIFT_ACTIVE_COMPILATION_CONDITIONS = /{print $2; exit}'
           }
           REL=$(flags Release); DBG=$(flags Debug)
           echo "Release: '$REL'  Debug: '$DBG'"

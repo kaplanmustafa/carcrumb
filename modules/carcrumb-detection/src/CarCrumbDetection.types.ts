@@ -77,3 +77,52 @@ export type Diagnostics = {
     authorization: MotionAuthorization;
   };
 };
+
+/** Mirrors `Confidence` in Swift. */
+export type ParkingConfidence = 'low' | 'high';
+
+/**
+ * A stored park point. Mirrors `BridgeValues.parking` (ios/CarCrumbDetectionModule.swift).
+ * Contains raw coordinates: use them for display / map links only, never log them
+ * (no console.log, no error reports) and never send them over the network.
+ */
+export type ParkingRecord = {
+  id: number;
+  /** null when the trip row is unknown (e.g. the database was locked when the trip began). */
+  tripId: number | null;
+  latitude: number;
+  longitude: number;
+  /** Horizontal accuracy of the chosen fix, metres. */
+  accuracy: number;
+  confidence: ParkingConfidence;
+  /** Milliseconds since 1970 (`new Date(parkedAt)`). */
+  parkedAt: number;
+};
+
+/**
+ * Mirrors `StoredTripStatus` in Swift; 'open' = trip in progress (no status yet).
+ * 'uncertain' = no car link (bus, taxi): out of statistics until confirmed, never has a park.
+ * 'recovered' = reconstructed from motion history without a route (not produced yet).
+ */
+export type TripStatusName = 'confirmed' | 'uncertain' | 'recovered' | 'open';
+
+/** Mirrors `BridgeValues.trip` (ios/CarCrumbDetectionModule.swift). */
+export type TripRecord = {
+  id: number;
+  /** Milliseconds since 1970; the real start (refined from motion history when possible). */
+  startedAt: number;
+  /** Milliseconds since 1970; null while the trip is open. */
+  endedAt: number | null;
+  status: TripStatusName;
+  /** null until route recording exists. */
+  distanceMeters: number | null;
+};
+
+/**
+ * Rejection codes of the history functions (`error.code`):
+ * - ERR_STORE_UNAVAILABLE: database not readable yet (device not unlocked since restart),
+ * - ERR_STORE: other read error,
+ * - ERR_DELETE_HISTORY: deleteAllHistory failed; the message is the failed step
+ *   ('database' | 'stateFile' | 'geofence' | 'traces').
+ */
+export type HistoryErrorCode = 'ERR_STORE_UNAVAILABLE' | 'ERR_STORE' | 'ERR_DELETE_HISTORY';
