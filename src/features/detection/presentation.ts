@@ -14,7 +14,7 @@ export const statePresentation: Record<DetectionStateName, StatePresentation> = 
     title: 'Beklemede',
     description: 'Araç hareketi algılanınca yolculuk kendiliğinden başlar.',
     iconName: 'idle',
-    tone: 'uncertain',
+    tone: 'idle',
   },
   MAYBE_DRIVING: {
     title: 'Hareket algılandı',

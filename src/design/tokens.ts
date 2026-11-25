@@ -2,7 +2,7 @@
  * CarCrumb design tokens — the only place where raw style values live.
  *
  * Screens never write colours, font sizes or spacing literals; they use these tokens
- * through the components in `src/design/components`. A Jest test enforces this
+ * through the components in `src/design/components.tsx`. A Jest test enforces this
  * (`src/design/__tests__/no-raw-styles.test.ts`).
  *
  * Principles (docs/DECISIONS.md, "Tasarım sistemi"):
@@ -27,6 +27,8 @@ export const color = {
   },
   /** Meaning-carrying colours. Never used as the only signal: always paired with text/icon. */
   status: {
+    /** Nothing happening: neutral, not a warning. */
+    idle: { type: 'hierarchical', style: 'secondary' },
     parked: 'green',
     driving: 'blue',
     pending: 'orange',
@@ -57,7 +59,7 @@ export const radius = {
  * Typography roles mapped to SwiftUI text styles. Every role scales with Dynamic Type;
  * there are deliberately no fixed point sizes.
  */
-export const type = {
+export const typography = {
   display: { textStyle: 'largeTitle', weight: 'bold' },
   title: { textStyle: 'title2', weight: 'semibold' },
   heading: { textStyle: 'headline' },
@@ -68,7 +70,7 @@ export const type = {
   metric: { textStyle: 'title3', weight: 'semibold', monospacedDigits: true },
 } as const;
 
-export type TypeRole = keyof typeof type;
+export type TypeRole = keyof typeof typography;
 export type StatusTone = keyof typeof color.status;
 
 /** SF Symbols used for domain concepts, so the same idea always has the same icon. */
@@ -82,7 +84,7 @@ export const icon = {
   location: 'location.fill',
   locationOff: 'location.slash.fill',
   motion: 'figure.walk.motion',
-  carLink: 'car.side.and.exclamationmark',
+  carLink: 'car.front.waves.left.and.right.and.up.fill',
   history: 'clock.arrow.circlepath',
   diagnostics: 'stethoscope',
   directions: 'arrow.triangle.turn.up.right.diamond.fill',

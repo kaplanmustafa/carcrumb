@@ -1,5 +1,5 @@
 import { statePresentation } from '../../features/detection/presentation';
-import { color, icon, radius, space, type as typeScale } from '../tokens';
+import { color, icon, radius, space, typography } from '../tokens';
 
 describe('design tokens', () => {
   it('spacing is on the 2/4-pt grid and strictly increasing', () => {
@@ -14,7 +14,7 @@ describe('design tokens', () => {
   });
 
   it('every type role uses a Dynamic Type text style and no fixed size', () => {
-    Object.values(typeScale).forEach((t) => {
+    Object.values(typography).forEach((t) => {
       expect(t.textStyle).toBeTruthy();
       expect(t).not.toHaveProperty('size');
     });
