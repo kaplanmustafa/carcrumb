@@ -29,6 +29,12 @@ jobs:
         run: |
           bad=$(git ls-files fixtures/traces | grep -vE "^fixtures/traces/(synthetic_[^/]+|.gitkeep)$" || true)
           if [ -n "$bad" ]; then echo "Only synthetic_ traces may be committed:"; echo "$bad"; exit 1; fi
+      - name: Design preview flag only in the screenshots workflow
+        # EXPO_PUBLIC_PREVIEW=1 enables preview screens; it must never reach a shipped build
+        # (eas.json, .env*, app config). Only screenshots.yml may set it.
+        run: |
+          hits=$(git grep -l "EXPO_PUBLIC_PREVIEW" -- . ':!.github/workflows/screenshots.yml' ':!.github/workflows/ci.yml' ':!src/**' ':!docs/**' || true)
+          if [ -n "$hits" ]; then echo "EXPO_PUBLIC_PREVIEW set outside screenshots.yml:"; echo "$hits"; exit 1; fi
       - name: Synthetic traces stay inside the synthetic coordinate box
         run: node .github/scripts/check-synthetic-traces.mjs
       - run: npm ci

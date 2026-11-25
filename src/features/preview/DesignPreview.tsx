@@ -1,7 +1,8 @@
 /**
  * Design preview screens for CI screenshots (.github/workflows/screenshots.yml).
  *
- * Compiled in only when the bundle is built with EXPO_PUBLIC_PREVIEW=1. The screen to show
+ * Active only when the bundle is built with EXPO_PUBLIC_PREVIEW=1 (the module is always bundled;
+ * in normal builds the branch is dead and the launch argument is never read). The screen to show
  * is picked with a simulator launch argument (`-previewScreen states|components|permission`),
  * which iOS puts into NSUserDefaults and React Native's Settings API exposes. Normal builds
  * never read the launch argument and always show the real app.

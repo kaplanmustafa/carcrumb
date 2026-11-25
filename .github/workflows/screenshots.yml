@@ -91,6 +91,7 @@ jobs:
           shot 07-states-largest-text   light accessibility-extra-extra-extra-large states
           ls -la screenshots
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: screenshots
           path: screenshots/
