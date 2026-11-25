@@ -10,16 +10,24 @@
  *   mode, Increase Contrast and Dynamic Type come from the system for free.
  * - One brand accent; everything else is semantic.
  */
+import { PlatformColor } from 'react-native';
 import type { SFSymbol } from 'sf-symbols-typescript';
 
 /**
- * Colours. Values are SwiftUI named colours or hierarchical styles understood by
- * `@expo/ui/swift-ui` modifiers (`foregroundStyle`, `tint`). They adapt to dark mode
- * and accessibility settings on their own.
+ * iOS system colour (UIColor.system*). Adapts to dark mode and Increase Contrast.
+ * Never use bare names like 'blue': @expo/ui reads those as CSS colours (#0000FF),
+ * not the system palette (the first CI screenshots showed exactly that).
+ */
+const system = (name: 'systemIndigo' | 'systemGreen' | 'systemBlue' | 'systemOrange' | 'systemGray' | 'systemRed') =>
+  PlatformColor(name);
+
+/**
+ * Colours for `@expo/ui/swift-ui` modifiers (`foregroundStyle`, `tint`): system colours
+ * or SwiftUI hierarchical styles, all adapting to dark mode and accessibility settings.
  */
 export const color = {
   /** Brand accent: buttons, selected states, the car pin. */
-  accent: 'indigo',
+  accent: system('systemIndigo'),
   text: {
     primary: { type: 'hierarchical', style: 'primary' },
     secondary: { type: 'hierarchical', style: 'secondary' },
@@ -29,11 +37,11 @@ export const color = {
   status: {
     /** Nothing happening: neutral, not a warning. */
     idle: { type: 'hierarchical', style: 'secondary' },
-    parked: 'green',
-    driving: 'blue',
-    pending: 'orange',
-    uncertain: 'gray',
-    danger: 'red',
+    parked: system('systemGreen'),
+    driving: system('systemBlue'),
+    pending: system('systemOrange'),
+    uncertain: system('systemGray'),
+    danger: system('systemRed'),
   },
 } as const;
 
@@ -77,7 +85,7 @@ export type StatusTone = keyof typeof color.status;
 export const icon = {
   car: 'car.fill',
   parked: 'parkingsign.circle.fill',
-  driving: 'car.side.fill',
+  driving: 'car.fill',
   walking: 'figure.walk',
   pending: 'hourglass',
   idle: 'moon.zzz.fill',

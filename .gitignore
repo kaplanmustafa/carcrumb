@@ -48,3 +48,6 @@ fixtures/traces/*
 # SwiftPM
 .build/
 .swiftpm/
+
+# Claude Code agent worktrees
+.claude/worktrees/
