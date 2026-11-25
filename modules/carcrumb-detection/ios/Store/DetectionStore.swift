@@ -23,17 +23,26 @@ public protocol DetectionStore: AnyObject {
   /// Ignored if the trip is gone.
   func refineTripStart(tripID: Int64, startedAt: Date) throws
   func endTrip(tripID: Int64?, status: TripStatus, endedAt: Date) throws
+  /// Writes a whole, already closed trip in one go. Used when `beginTrip` could not write
+  /// (database unavailable before the first unlock), so the trip is not lost.
+  /// Returns the trip id to pass to `saveParking` for this trip's park. While the database is
+  /// still unavailable the trip is buffered and a **provisional negative id** is returned
+  /// (valid only for this store instance); a park buffered with it is linked to the real row
+  /// when the buffer is replayed. Never throws `.unavailable`.
+  func saveClosedTrip(startedAt: Date, detectedAt: Date, endedAt: Date, status: TripStatus) throws -> Int64
   /// Applies `ParkingPolicy`. A rejected park is not an error; see the outcome.
   @discardableResult
   func saveParking(_ point: ParkPoint, tripID: Int64?) throws -> ParkingWriteOutcome
   /// Launch housekeeping: trips still open (no status) other than `tripID` were orphaned by a
-  /// process death between `beginTrip` and the state save. They are closed as `uncertain`
-  /// (out of statistics, like any trip we cannot vouch for), ending at their start.
+  /// process death between `beginTrip` and the state save, or by a dropped buffered `endTrip`.
+  /// They are closed as `uncertain` (out of statistics, like any trip we cannot vouch for),
+  /// ending at their start. A park attached to such a trip is kept but detached
+  /// (`tripId = NULL`): an uncertain trip has no park (rule 1).
   func abandonOpenTrips(except tripID: Int64?) throws
 
   // MARK: Reads (JS bridge)
 
-  /// The current park ("Arabam nerede"): newest by `parkedAt` (see `ParkingPolicy`).
+  /// The current park ("Arabam nerede"): the newest written row (see `ParkingPolicy`).
   func lastParking() throws -> StoredParking?
   /// Up to `ParkingPolicy.keepCount` parks, current first.
   func recentParkings() throws -> [StoredParking]
@@ -124,10 +133,16 @@ public enum ParkingWriteOutcome: String, Equatable, Sendable {
   case replaced
   /// Not written: the trip is `uncertain` (no car link). docs/DECISIONS.md "Hata dengesi".
   case rejectedUncertainTrip
-  /// Not written: it would have displaced a high-confidence park of the same trip, or a
-  /// newer-or-equal high-confidence park. See `ParkingPolicy`.
+  /// Not written: it would have displaced a high-confidence park of the same trip, or (no
+  /// trip) the latest high-confidence park it is not newer than. See `ParkingPolicy`.
   case keptHigherConfidence
+  /// Written but removed by the "keep last 3" pruning in the same transaction, so it is not
+  /// stored. Should not happen with write-order pruning (a new row is always the newest);
+  /// checked after pruning so the outcome always matches the stored data (Karar D: the
+  /// engine moves the geofence only for a stored park).
+  case notKept
 
+  /// True only if the park is in the store after the call.
   public var wasWritten: Bool { self == .inserted || self == .replaced }
 }
 
@@ -168,33 +183,47 @@ public final class InMemoryDetectionStore: DetectionStore {
     tripRows[i].status = StoredTripStatus(status)
   }
 
+  public func saveClosedTrip(startedAt: Date, detectedAt: Date, endedAt: Date, status: TripStatus) throws -> Int64 {
+    let id = nextTripID
+    nextTripID += 1
+    tripRows.append(StoredTrip(
+      id: id, startedAt: startedAt, detectedAt: detectedAt, endedAt: endedAt, status: StoredTripStatus(status)))
+    return id
+  }
+
   @discardableResult
   public func saveParking(_ point: ParkPoint, tripID: Int64?) throws -> ParkingWriteOutcome {
     // An unknown trip id is stored as "no trip" (same as the SQLite foreign key handling).
     let trip = tripID.flatMap { id in tripRows.first { $0.id == id } }
     let tripID = trip?.id
     let sameTrip = tripID.flatMap { id in parkingRows.first { $0.tripID == id } }
-    let newestHigh = parkingRows.filter { $0.confidence == .high }.map(\.parkedAt).max()
-    switch ParkingPolicy.decide(point, tripStatus: trip?.status, sameTrip: sameTrip, newestHighParkedAt: newestHigh) {
-    case let .reject(outcome):
-      return outcome
+    let latestHigh = parkingRows.filter { $0.confidence == .high }.max { $0.id < $1.id }
+    let outcome: ParkingWriteOutcome
+    switch ParkingPolicy.decide(point, tripID: tripID, tripStatus: trip?.status, sameTrip: sameTrip, latestHigh: latestHigh) {
+    case let .reject(rejection):
+      return rejection
     case let .replace(existingID):
-      let i = parkingRows.firstIndex { $0.id == existingID }!
-      parkingRows[i] = StoredParking(id: existingID, tripID: tripID, point: point)
-      prune()
-      return .replaced
+      // Re-inserted: the replacement is the newest write.
+      parkingRows.removeAll { $0.id == existingID }
+      outcome = .replaced
     case .insert:
-      parkingRows.append(StoredParking(id: nextParkingID, tripID: tripID, point: point))
-      nextParkingID += 1
-      prune()
-      return .inserted
+      outcome = .inserted
     }
+    let newID = nextParkingID
+    nextParkingID += 1
+    parkingRows.append(StoredParking(id: newID, tripID: tripID, point: point))
+    prune()
+    return parkingRows.contains { $0.id == newID } ? outcome : .notKept
   }
 
   public func abandonOpenTrips(except tripID: Int64?) throws {
     for i in tripRows.indices where tripRows[i].status == nil && tripRows[i].id != tripID {
       tripRows[i].status = .uncertain
       tripRows[i].endedAt = tripRows[i].startedAt
+      let abandoned = tripRows[i].id
+      for p in parkingRows.indices where parkingRows[p].tripID == abandoned {
+        parkingRows[p].tripID = nil
+      }
     }
   }
 

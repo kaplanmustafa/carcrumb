@@ -29,9 +29,12 @@ Pod::Spec.new do |s|
     raise 'CarCrumbDetection: React Native spm_dependency helper not found (needed for GRDB). ' \
           'The Podfile must require react-native/scripts/react_native_pods before use_expo_modules!.'
   end
+  # Pinned to an exact version (supply chain: no silent upgrade at pod install / package
+  # resolution). 7.12.0 = newest 7.x tag on 25 Nov 2026 (git ls-remote --tags). Upgrades go
+  # in a separate PR, changing this AND Package.swift together.
   spm_dependency(s,
     url: 'https://github.com/groue/GRDB.swift.git',
-    requirement: { kind: 'upToNextMajorVersion', minimumVersion: '7.0.0' },
+    requirement: { kind: 'exactVersion', version: '7.12.0' },
     products: ['GRDB'])
 
   s.source_files = '*.swift', 'Detection/**/*.swift', 'Sensors/**/*.swift', 'Engine/**/*.swift', 'Store/**/*.swift'

@@ -123,6 +123,6 @@ export type TripRecord = {
  * - ERR_STORE_UNAVAILABLE: database not readable yet (device not unlocked since restart),
  * - ERR_STORE: other read error,
  * - ERR_DELETE_HISTORY: deleteAllHistory failed; the message is the failed step
- *   ('database' | 'stateFile' | 'traces').
+ *   ('database' | 'stateFile' | 'geofence' | 'traces').
  */
 export type HistoryErrorCode = 'ERR_STORE_UNAVAILABLE' | 'ERR_STORE' | 'ERR_DELETE_HISTORY';

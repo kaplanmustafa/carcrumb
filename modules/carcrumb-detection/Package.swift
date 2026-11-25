@@ -18,8 +18,9 @@ let package = Package(
     .library(name: "CarCrumbStore", targets: ["CarCrumbStore"]),
   ],
   dependencies: [
-    // Same range as the podspec's spm_dependency (up to next major from 7.0.0).
-    .package(url: "https://github.com/groue/GRDB.swift.git", "7.0.0"..<"8.0.0"),
+    // Exact pin, same version as the podspec's spm_dependency (newest 7.x tag on
+    // 25 Nov 2026). Upgrades go in a separate PR, changing both files together.
+    .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.12.0"),
   ],
   targets: [
     .target(name: "CarCrumbDetection", path: "ios/Detection"),

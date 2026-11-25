@@ -15,7 +15,10 @@ final class GRDBDetectionStoreRuleTests: TemporaryDirectoryTestCase {
   func testKeepsLastThree() throws { try StoreRuleScenarios.keepsLastThree(fresh()) }
   func testSameTripLowDoesNotReplaceHigh() throws { try StoreRuleScenarios.sameTripLowDoesNotReplaceHigh(fresh()) }
   func testSameTripHighReplacesLow() throws { try StoreRuleScenarios.sameTripHighReplacesLow(fresh()) }
-  func testLateLowCannotDisplaceNewerHigh() throws { try StoreRuleScenarios.lateLowCannotDisplaceNewerHigh(fresh()) }
+  func testLateLowWithoutTripCannotDisplaceHigh() throws { try StoreRuleScenarios.lateLowWithoutTripCannotDisplaceHigh(fresh()) }
+  func testClockSetForwardThenCorrected() throws { try StoreRuleScenarios.clockSetForwardThenCorrected(fresh()) }
+  func testAbandonDetachesParking() throws { try StoreRuleScenarios.abandonDetachesParking(fresh()) }
+  func testClosedTripLinksParking() throws { try StoreRuleScenarios.closedTripLinksParking(fresh()) }
   func testNewerLowFromNewTripBecomesCurrent() throws { try StoreRuleScenarios.newerLowFromNewTripBecomesCurrent(fresh()) }
   func testUncertainTripWritesNoParking() throws { try StoreRuleScenarios.uncertainTripWritesNoParking(fresh()) }
   func testTripLifecycle() throws { try StoreRuleScenarios.tripLifecycle(fresh()) }
@@ -84,7 +87,7 @@ final class GRDBDetectionStoreTests: TemporaryDirectoryTestCase {
       try db.execute(
         sql: """
           INSERT INTO parkings (tripId, latitude, longitude, accuracy, confidence, parkedAt, fixAt)
-          VALUES (?, 41.0, 29.0, 5, 'high', ?, ?)
+          VALUES (?, 41.0, -40.0, 5, 'high', ?, ?)
           """,
         arguments: [trip, StoreFixtures.date(600), StoreFixtures.date(600)])
     })
@@ -148,6 +151,71 @@ final class GRDBDetectionStoreTests: TemporaryDirectoryTestCase {
     _ = store
   }
 
+  /// Reviewer finding 1: trip begun AND ended before the first unlock. The engine calls
+  /// `saveClosedTrip` (provisional id) and `saveParking` with that id; both are buffered and
+  /// the park is linked to the real trip row at replay.
+  func testTripAndParkWhileLockedAreLinkedAtReplay() throws {
+    struct Locked: Error {}
+    var locked = true
+    let dir = directory!
+    let store = GRDBDetectionStore(directoryProvider: {
+      if locked { throw Locked() }
+      return dir
+    })
+    XCTAssertThrowsError(try store.beginTrip(startedAt: StoreFixtures.date(0)))
+    let provisional = try store.saveClosedTrip(
+      startedAt: StoreFixtures.date(0), detectedAt: StoreFixtures.date(0), endedAt: StoreFixtures.date(600), status: .confirmed)
+    XCTAssertLessThan(provisional, 0, "provisional id while locked")
+    XCTAssertThrowsError(try store.saveParking(StoreFixtures.park(600, .high), tripID: provisional)) {
+      XCTAssertEqual($0 as? StoreError, .unavailable)
+    }
+    XCTAssertEqual(store.pendingWriteCount, 2)
+
+    locked = false
+    let trip = try XCTUnwrap(try store.trips(limit: 10).first)
+    XCTAssertGreaterThan(trip.id, 0)
+    XCTAssertEqual(trip.status, .confirmed)
+    XCTAssertEqual(trip.startedAt, StoreFixtures.date(0))
+    XCTAssertEqual(trip.endedAt, StoreFixtures.date(600))
+    XCTAssertEqual(try store.lastParking()?.tripID, trip.id, "park linked to the replayed trip row")
+    XCTAssertEqual(store.pendingWriteCount, 0)
+  }
+
+  /// Same, but the trip was uncertain: the replayed park is rejected (rule 1).
+  func testUncertainTripWhileLockedRejectsParkAtReplay() throws {
+    struct Locked: Error {}
+    var locked = true
+    let dir = directory!
+    let store = GRDBDetectionStore(directoryProvider: {
+      if locked { throw Locked() }
+      return dir
+    })
+    let provisional = try store.saveClosedTrip(
+      startedAt: StoreFixtures.date(0), detectedAt: StoreFixtures.date(0), endedAt: StoreFixtures.date(600), status: .uncertain)
+    XCTAssertThrowsError(try store.saveParking(StoreFixtures.park(600, .high), tripID: provisional))
+    locked = false
+    XCTAssertEqual(try store.trips(limit: 10).first?.status, .uncertain)
+    XCTAssertNil(try store.lastParking())
+  }
+
+  /// The database opens between `saveClosedTrip` (buffered) and `saveParking` (live): the open
+  /// replays the trip first, and the live park still resolves the provisional id.
+  func testProvisionalIDResolvesAfterOpenInSameBatch() throws {
+    struct Locked: Error {}
+    var locked = true
+    let dir = directory!
+    let store = GRDBDetectionStore(directoryProvider: {
+      if locked { throw Locked() }
+      return dir
+    })
+    let provisional = try store.saveClosedTrip(
+      startedAt: StoreFixtures.date(0), detectedAt: StoreFixtures.date(0), endedAt: StoreFixtures.date(600), status: .confirmed)
+    locked = false
+    XCTAssertEqual(try store.saveParking(StoreFixtures.park(600, .high), tripID: provisional), .inserted)
+    let tripID = try XCTUnwrap(try store.trips(limit: 1).first?.id)
+    XCTAssertEqual(try store.lastParking()?.tripID, tripID)
+  }
+
   func testPendingBufferIsBounded() throws {
     struct Locked: Error {}
     let store = GRDBDetectionStore(directoryProvider: { throw Locked() })
@@ -186,6 +254,40 @@ final class GRDBDetectionStoreTests: TemporaryDirectoryTestCase {
     XCTAssertNil(data.range(of: needle), "deleted coordinates must not remain in the file")
   }
 
+  /// Security k2: a park removed by the "last 3" pruning (or a same-trip replace) must not
+  /// survive in the WAL (nor in the main file: secure_delete).
+  func testPrunedAndReplacedCoordinatesDoNotRemainOnDisk() throws {
+    let store = makeStore()
+    let pruned = 41.0123
+    let replaced = 41.0456
+    // Same-trip replace: low at `replaced`, then high elsewhere.
+    let first = try store.beginTrip(startedAt: StoreFixtures.date(0))
+    try store.endTrip(tripID: first, status: .confirmed, endedAt: StoreFixtures.date(600))
+    try store.saveParking(StoreFixtures.park(600, .low, lat: replaced), tripID: first)
+    XCTAssertEqual(try store.saveParking(StoreFixtures.park(610, .high, lat: pruned), tripID: first), .replaced)
+    // Three newer parks prune the `pruned` one.
+    for (offset, lat) in [(2_000.0, 41.02), (3_000.0, 41.03), (4_000.0, 41.04)] {
+      let t = try store.beginTrip(startedAt: StoreFixtures.date(offset - 600))
+      try store.endTrip(tripID: t, status: .confirmed, endedAt: StoreFixtures.date(offset))
+      XCTAssertEqual(try store.saveParking(StoreFixtures.park(offset, .high, lat: lat), tripID: t), .inserted)
+    }
+    XCTAssertEqual(try store.recentParkings().map(\.latitude), [41.04, 41.03, 41.02])
+
+    let wal = directory.appendingPathComponent("carcrumb.sqlite-wal")
+    let main = directory.appendingPathComponent("carcrumb.sqlite")
+    for value in [pruned, replaced] {
+      var bits = value.bitPattern.bigEndian // SQLite stores REAL big-endian
+      let needle = Data(bytes: &bits, count: 8)
+      if FileManager.default.fileExists(atPath: wal.path) {
+        XCTAssertNil(try Data(contentsOf: wal).range(of: needle), "removed coordinate left in the WAL")
+      }
+      XCTAssertNil(try Data(contentsOf: main).range(of: needle), "removed coordinate left in the database file")
+    }
+    try store.read { db in
+      XCTAssertEqual(try Int.fetchOne(db, sql: "PRAGMA journal_size_limit"), 0)
+    }
+  }
+
   func testDeleteAllHistoryDropsBufferedWrites() throws {
     struct Locked: Error {}
     var locked = true
@@ -211,18 +313,29 @@ final class ParkingPolicyTests: XCTestCase {
   func testDecisions() {
     let low = StoreFixtures.park(100, .low)
     let high = StoreFixtures.park(100, .high)
-    XCTAssertEqual(ParkingPolicy.decide(high, tripStatus: .uncertain, sameTrip: nil, newestHighParkedAt: nil), .reject(.rejectedUncertainTrip))
-    XCTAssertEqual(ParkingPolicy.decide(low, tripStatus: .confirmed, sameTrip: stored(1, .high, at: 50, trip: 7), newestHighParkedAt: nil), .reject(.keptHigherConfidence))
-    XCTAssertEqual(ParkingPolicy.decide(high, tripStatus: .confirmed, sameTrip: stored(1, .low, at: 50, trip: 7), newestHighParkedAt: nil), .replace(existingID: 1))
-    XCTAssertEqual(ParkingPolicy.decide(low, tripStatus: .confirmed, sameTrip: stored(1, .low, at: 50, trip: 7), newestHighParkedAt: nil), .replace(existingID: 1))
-    XCTAssertEqual(ParkingPolicy.decide(low, tripStatus: nil, sameTrip: nil, newestHighParkedAt: StoreFixtures.date(100)), .reject(.keptHigherConfidence))
-    XCTAssertEqual(ParkingPolicy.decide(low, tripStatus: nil, sameTrip: nil, newestHighParkedAt: StoreFixtures.date(99)), .insert)
-    XCTAssertEqual(ParkingPolicy.decide(high, tripStatus: nil, sameTrip: nil, newestHighParkedAt: StoreFixtures.date(500)), .insert)
+    let decide = ParkingPolicy.decide
+    XCTAssertEqual(decide(high, 7, .uncertain, nil, nil), .reject(.rejectedUncertainTrip))
+    XCTAssertEqual(decide(low, 7, .confirmed, stored(1, .high, at: 50, trip: 7), nil), .reject(.keptHigherConfidence))
+    XCTAssertEqual(decide(high, 7, .confirmed, stored(1, .low, at: 50, trip: 7), nil), .replace(existingID: 1))
+    XCTAssertEqual(decide(low, 7, .confirmed, stored(1, .low, at: 50, trip: 7), nil), .replace(existingID: 1))
+    // Rule 3: only without a trip.
+    XCTAssertEqual(decide(low, nil, nil, nil, stored(2, .high, at: 100)), .reject(.keptHigherConfidence))
+    XCTAssertEqual(decide(low, nil, nil, nil, stored(2, .high, at: 99)), .insert)
+    XCTAssertEqual(decide(low, 7, .confirmed, nil, stored(2, .high, at: 500)), .insert, "another trip's low park is a newer write")
+    XCTAssertEqual(decide(high, nil, nil, nil, stored(2, .high, at: 500)), .insert)
   }
 
-  func testOrderingPrefersNewestThenHigh() {
-    XCTAssertTrue(ParkingPolicy.isNewer(stored(1, .low, at: 200), than: stored(2, .high, at: 100)))
-    XCTAssertTrue(ParkingPolicy.isNewer(stored(1, .high, at: 100), than: stored(2, .low, at: 100)))
-    XCTAssertTrue(ParkingPolicy.isNewer(stored(2, .low, at: 100), than: stored(1, .low, at: 100)))
+  func testRule3ComparesAtMillisecondPrecision() {
+    let decide = ParkingPolicy.decide
+    // 0.4 ms later is "equal" at storage precision → rejected; 1 ms later → newer.
+    XCTAssertEqual(decide(StoreFixtures.park(100.0004, .low), nil, nil, nil, stored(2, .high, at: 100)), .reject(.keptHigherConfidence))
+    XCTAssertEqual(decide(StoreFixtures.park(100.001, .low), nil, nil, nil, stored(2, .high, at: 100)), .insert)
+    XCTAssertEqual(ParkingPolicy.milliseconds(StoreFixtures.date(100)), ParkingPolicy.milliseconds(StoreFixtures.date(100.0009)))
+  }
+
+  func testOrderingIsWriteOrder() {
+    XCTAssertTrue(ParkingPolicy.isNewer(stored(2, .low, at: 100), than: stored(1, .high, at: 200)), "id, not parkedAt")
+    XCTAssertTrue(ParkingPolicy.isNewer(stored(2, .low, at: 100), than: stored(1, .high, at: 100)), "id, not confidence")
+    XCTAssertFalse(ParkingPolicy.isNewer(stored(1, .high, at: 900), than: stored(2, .low, at: 100)))
   }
 }

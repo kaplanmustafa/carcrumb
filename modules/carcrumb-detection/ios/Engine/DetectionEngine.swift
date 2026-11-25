@@ -41,8 +41,9 @@ public final class DetectionEngine: @unchecked Sendable {
   private var state: DetectionState = .idle
   private var tripID: Int64?
   /// Reducer start of the open trip when `store.beginTrip` failed (database unavailable,
-  /// e.g. before the first unlock). The row is created late, at `endTrip`, so the trip and
-  /// its park are not lost. Memory only: lost if the process dies before the trip ends.
+  /// e.g. before the first unlock). The row is written in one go at `endTrip`
+  /// (`store.saveClosedTrip`, buffered by the store if still locked), so the trip and its park
+  /// are not lost. Memory only: lost if the process dies before the trip ends.
   private var pendingTripStart: Date?
   /// End of the last closed trip; bounds the Core Motion history query of the next one.
   private var lastTripEndedAt: Date?
@@ -234,17 +235,26 @@ public final class DetectionEngine: @unchecked Sendable {
         } catch {
           tripID = nil
           pendingTripStart = startedAt
-          log.error("store.beginTrip failed (\(Self.storeErrorName(error), privacy: .public)); retried at endTrip")
+          log.error("store.beginTrip failed (\(Self.storeErrorName(error), privacy: .public)); written at endTrip")
         }
       case let .endTrip(status, endedAt):
         if tripID == nil, let start = pendingTripStart {
-          tripID = try? store.beginTrip(startedAt: start)
+          // beginTrip could not write (e.g. locked since reboot): write the whole trip now.
+          // While the database is still unavailable the store buffers it and returns a
+          // provisional id; the park below is buffered with that id and linked at replay.
+          do {
+            closedTripID = try store.saveClosedTrip(startedAt: start, detectedAt: start, endedAt: endedAt, status: status)
+          } catch {
+            closedTripID = nil
+            log.error("store.saveClosedTrip failed (\(Self.storeErrorName(error), privacy: .public))")
+          }
+        } else {
+          do { try store.endTrip(tripID: tripID, status: status, endedAt: endedAt) } catch {
+            log.error("store.endTrip failed (\(Self.storeErrorName(error), privacy: .public))")
+          }
+          closedTripID = tripID
         }
         pendingTripStart = nil
-        do { try store.endTrip(tripID: tripID, status: status, endedAt: endedAt) } catch {
-          log.error("store.endTrip failed (\(Self.storeErrorName(error), privacy: .public))")
-        }
-        closedTripID = tripID
         tripID = nil
         lastTripEndedAt = endedAt
       case let .saveParking(point):
@@ -363,14 +373,19 @@ public final class DetectionEngine: @unchecked Sendable {
   /// 1. engine to IDLE in memory (GPS off, open trip dropped), so no event re-creates data,
   /// 2. SQLite rows + VACUUM + WAL checkpoint(TRUNCATE) (`store.deleteAllHistory`),
   /// 3. `state.json` deleted (it can hold the ring buffer = coordinates),
-  /// 4. CLMonitor park condition removed (`clearGeofence`),
+  /// 4. CLMonitor park condition (`lastPark`) removed, awaited and verified: the completion
+  ///    is called only after the monitor no longer lists it,
   /// 5. debug trace directory `traces/` deleted.
   /// Every step runs even if an earlier one fails; the completion reports the first failure
-  /// (step name only, never paths or coordinates). Runs on the engine queue, so it is ordered
-  /// with sensor events: events already queued are reduced before, later ones start from IDLE.
+  /// in this order (step name only, never paths or coordinates). Runs on the engine queue, so
+  /// it is ordered with sensor events: events already queued are reduced before, later ones
+  /// start from IDLE. A park written after the deletion sets a new geofence after the removal
+  /// (the geofence operations run strictly in call order).
   public func deleteAllHistory(completion: @escaping @Sendable (Result<Void, DeleteHistoryError>) -> Void) {
     queue.async {
-      var failure: DeleteHistoryError?
+      var databaseFailed = false
+      var stateFileFailed = false
+      var tracesFailed = false
 
       // 1. Engine state. Not persisted here: state.json is deleted below and written again
       //    (IDLE, no trip data) only at the next state change.
@@ -383,31 +398,53 @@ public final class DetectionEngine: @unchecked Sendable {
       if old.isGPSState { self.onMain { $0.stopGPS() } }
 
       // 2. Database.
-      do { try self.store.deleteAllHistory() } catch { failure = failure ?? .database }
+      do { try self.store.deleteAllHistory() } catch { databaseFailed = true }
 
       // 3. state.json.
-      do { try self.stateFile.delete() } catch { failure = failure ?? .stateFile }
+      do { try self.stateFile.delete() } catch { stateFileFailed = true }
 
-      // 4. Park geofence (main actor; FIFO after the stopGPS above).
-      self.onMain { $0.clearGeofence() }
+      // 5. Traces (before the asynchronous step 4).
+      do { try self.recorder.deleteAll() } catch { tracesFailed = true }
 
-      // 5. Traces.
-      do { try self.recorder.deleteAll() } catch { failure = failure ?? .traces }
-
-      self.log.info("history deleted (was \(old.name, privacy: .public))")
       if old.name != self.state.name {
         self.updateTickTimer()
         let name = self.state.name
         self.snapshotLock.lock(); self._stateName = name; self.snapshotLock.unlock()
         self.observers.values.forEach { $0(name) }
       }
-      completion(failure.map { .failure($0) } ?? .success(()))
+
+      // 4. Park geofence on the main actor, FIFO after the stopGPS above; completes after
+      //    CLMonitor confirmed the removal.
+      let syncFailure: DeleteHistoryError? =
+        databaseFailed ? .database : stateFileFailed ? .stateFile : nil
+      let tracesFailure: DeleteHistoryError? = tracesFailed ? .traces : nil
+      let finish: @Sendable (Bool) -> Void = { geofenceCleared in
+        self.queue.async {
+          let geofenceFailure: DeleteHistoryError? = geofenceCleared ? nil : .geofence
+          let failure: DeleteHistoryError? = syncFailure ?? geofenceFailure ?? tracesFailure
+          self.log.info("history deleted (was \(old.name, privacy: .public), failed step: \(failure?.rawValue ?? "none", privacy: .public))")
+          completion(failure.map { .failure($0) } ?? .success(()))
+        }
+      }
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          guard let location = self.location else {
+            // Engine not started: no monitor to verify against.
+            finish(false)
+            return
+          }
+          Task { @MainActor in
+            finish(await location.clearGeofenceVerified())
+          }
+        }
+      }
     }
   }
 
   /// Which step of history deletion failed (no paths, no error text).
+  /// `geofence`: the CLMonitor `lastPark` condition could not be confirmed removed.
   public enum DeleteHistoryError: String, Error {
-    case database, stateFile, traces
+    case database, stateFile, geofence, traces
   }
 
   /// Error kind for logs: never the error text (it can contain the container path).

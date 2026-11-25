@@ -338,14 +338,36 @@ final class LocationSensor: NSObject {
     }
   }
 
+  /// History deletion: removes the park condition and confirms that the monitor no longer
+  /// lists it. Returns false if the monitor could not be opened or the condition is still
+  /// there. Runs in the same serialized chain as set/clear (after any earlier operation).
+  func clearGeofenceVerified() async -> Bool {
+    await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+      enqueueGeofenceOperation(onUnavailable: { cont.resume(returning: false) }) { [weak self] monitor in
+        await monitor.remove(Self.parkConditionID)
+        let ids = await monitor.identifiers
+        let gone = !ids.contains(Self.parkConditionID)
+        if gone { self?.geofenceActive = false }
+        cont.resume(returning: gone)
+      }
+    }
+  }
+
   /// Runs geofence operations one after another in call order. Each one awaits the monitor
   /// and CLMonitor calls, so independent Tasks could interleave (an older set finishing after
-  /// a newer one would leave the wrong circle).
-  private func enqueueGeofenceOperation(_ operation: @escaping @MainActor (CLMonitor) async -> Void) {
+  /// a newer one would leave the wrong circle). `onUnavailable` runs instead of `operation`
+  /// when the monitor cannot be obtained (so an awaiting caller is always resumed).
+  private func enqueueGeofenceOperation(
+    onUnavailable: (@MainActor () -> Void)? = nil,
+    _ operation: @escaping @MainActor (CLMonitor) async -> Void
+  ) {
     let previous = geofenceChain
     geofenceChain = Task { @MainActor [weak self] in
       await previous?.value
-      guard let self, let monitor = await self.awaitMonitor() else { return }
+      guard let self, let monitor = await self.awaitMonitor() else {
+        onUnavailable?()
+        return
+      }
       await operation(monitor)
     }
   }

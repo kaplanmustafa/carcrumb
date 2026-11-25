@@ -15,13 +15,17 @@ extension StoredParking: FetchableRecord {}
 /// a concurrent reader to serve, so a pool's extra reader connections buy nothing, while a
 /// single serialized connection keeps the single-writer rule structural (no second
 /// connection can exist in the process), uses one file handle, and makes `VACUUM` and
-/// `checkpoint(TRUNCATE)` in history deletion deterministic (a pool reader holding a WAL
-/// snapshot would make TRUNCATE return BUSY). Writes are tiny and rare (a few per trip).
+/// `checkpoint(TRUNCATE)` deterministic (a pool reader holding a WAL snapshot would make
+/// TRUNCATE return BUSY). Writes are tiny and rare (a few per trip).
 ///
 /// ## WAL
 /// Enabled per connection in `prepareDatabase` (docs/DECISIONS.md: "SQLite (GRDB, WAL)").
 /// A write that is interrupted by the process being killed in the background (jetsam) never
 /// leaves a half-written main file, and commits are cheaper than rollback-journal fsyncs.
+/// Removed coordinates must not linger in the WAL: `secure_delete` zeroes them in the page
+/// images, every park write that can delete a row (replace / prune) is followed by
+/// `checkpoint(TRUNCATE)` (cheap here: tiny database, serial queue, no readers), and
+/// `journal_size_limit = 0` truncates the WAL whenever SQLite itself resets it.
 ///
 /// ## File protection / backup
 /// The `CarCrumb/` directory is created with `completeUntilFirstUserAuthentication` and is
@@ -30,10 +34,11 @@ extension StoredParking: FetchableRecord {}
 ///
 /// ## Locked device (before first unlock after a reboot)
 /// Opening is lazy and retried at every call; it never crashes. Until it succeeds,
-/// `beginTrip` and the reads throw `StoreError.unavailable`; `refineTripStart`, `endTrip`
-/// and `saveParking` are buffered in memory (bounded, in order) and replayed, with the same
-/// rules, right after the first successful open, then also throw `.unavailable` so the
-/// engine knows the write is deferred. Buffered writes are lost if the process dies first.
+/// `beginTrip` and the reads throw `StoreError.unavailable`; `refineTripStart`, `endTrip`,
+/// `saveClosedTrip` and `saveParking` are buffered in memory (bounded, in order) and replayed,
+/// with the same rules, right after the first successful open. Buffered calls throw
+/// `.unavailable` (except `saveClosedTrip`, which returns a provisional id) so the engine knows
+/// the write is deferred. Buffered writes are lost if the process dies first.
 ///
 /// Threading: not thread-safe by itself; confined to the engine queue (see `DetectionStore`).
 /// Privacy: no logging here at all; coordinates only go to SQLite.
@@ -44,6 +49,9 @@ public final class GRDBDetectionStore: DetectionStore {
   private let directoryProvider: () throws -> URL
   private var dbQueue: DatabaseQueue?
   private var pending: [PendingWrite] = []
+  /// Provisional (negative) trip id from `saveClosedTrip` → real row id, filled at replay.
+  private var provisionalTripIDs: [Int64: Int64] = [:]
+  private var nextProvisionalID: Int64 = -1
   public private(set) var databaseURL: URL?
 
   /// Application Support/CarCrumb (protected, excluded from backup).
@@ -93,6 +101,8 @@ public final class GRDBDetectionStore: DetectionStore {
       guard mode?.lowercased() == "wal" else { throw WALRefused() }
       // Deleted content is overwritten with zeros (history deletion, superseded parks).
       try db.execute(sql: "PRAGMA secure_delete = ON")
+      // Truncate the WAL to 0 bytes whenever SQLite resets it (no stale frames kept on disk).
+      _ = try Int.fetchOne(db, sql: "PRAGMA journal_size_limit = 0")
     }
     return config
   }
@@ -106,17 +116,26 @@ public final class GRDBDetectionStore: DetectionStore {
     try? ProtectedFiles.excludeFromBackup(&db)
   }
 
+  /// Copies the WAL into the main file and truncates it to 0 bytes. Best effort: the data is
+  /// already committed; a failure (BUSY) only delays it to the next one.
+  private static func truncateWAL(_ queue: DatabaseQueue) {
+    _ = try? queue.writeWithoutTransaction { db in try db.checkpoint(.truncate) }
+  }
+
   // MARK: Buffered writes
 
   enum PendingWrite {
     case refine(tripID: Int64, startedAt: Date)
     case end(tripID: Int64, status: TripStatus, endedAt: Date)
+    case closedTrip(provisionalID: Int64, startedAt: Date, detectedAt: Date, endedAt: Date, status: TripStatus)
     case park(ParkPoint, tripID: Int64?)
   }
 
   private func buffer(_ write: PendingWrite) {
     pending.append(write)
     if pending.count > Self.maxPendingWrites {
+      // Oldest first. A dropped closedTrip leaves its park without trip; a dropped endTrip
+      // leaves the trip open until `abandonOpenTrips` at a later launch.
       pending.removeFirst(pending.count - Self.maxPendingWrites)
     }
   }
@@ -124,10 +143,12 @@ public final class GRDBDetectionStore: DetectionStore {
   private func flushPending(into queue: DatabaseQueue) {
     let writes = pending
     pending.removeAll()
+    guard !writes.isEmpty else { return }
     for write in writes {
       // Same rules as a live write; a rejected or failing one is dropped.
-      _ = try? queue.write { db in try Self.apply(write, db) }
+      _ = try? queue.write { db in try self.apply(write, db) }
     }
+    Self.truncateWAL(queue)
   }
 
   /// Writes now, or buffers and throws `.unavailable` when the database cannot be opened.
@@ -140,11 +161,16 @@ public final class GRDBDetectionStore: DetectionStore {
       buffer(write)
       throw error
     }
-    return try queue.write { db in try Self.apply(write, db) }
+    let outcome = try queue.write { db in try self.apply(write, db) }
+    if case .park = write, outcome?.wasWritten == true {
+      // A replace or prune may have deleted a park: do not leave its frames in the WAL.
+      Self.truncateWAL(queue)
+    }
+    return outcome
   }
 
   @discardableResult
-  static func apply(_ write: PendingWrite, _ db: Database) throws -> ParkingWriteOutcome? {
+  private func apply(_ write: PendingWrite, _ db: Database) throws -> ParkingWriteOutcome? {
     switch write {
     case let .refine(tripID, startedAt):
       // Only ever earlier (the estimator looks back from detection).
@@ -157,8 +183,14 @@ public final class GRDBDetectionStore: DetectionStore {
         sql: "UPDATE trips SET endedAt = ?, status = ? WHERE id = ?",
         arguments: [endedAt, StoredTripStatus(status).rawValue, tripID])
       return nil
+    case let .closedTrip(provisionalID, startedAt, detectedAt, endedAt, status):
+      provisionalTripIDs[provisionalID] = try Self.insertClosedTrip(
+        startedAt: startedAt, detectedAt: detectedAt, endedAt: endedAt, status: status, db)
+      return nil
     case let .park(point, tripID):
-      return try saveParking(point, tripID: tripID, db)
+      // A provisional id resolves to the row its buffered closedTrip created (nil if dropped).
+      let resolved = tripID.flatMap { $0 < 0 ? provisionalTripIDs[$0] : $0 }
+      return try Self.saveParking(point, tripID: resolved, db)
     }
   }
 
@@ -182,6 +214,31 @@ public final class GRDBDetectionStore: DetectionStore {
     try perform(.end(tripID: tripID, status: status, endedAt: endedAt))
   }
 
+  public func saveClosedTrip(startedAt: Date, detectedAt: Date, endedAt: Date, status: TripStatus) throws -> Int64 {
+    let queue: DatabaseQueue
+    do {
+      queue = try database()
+    } catch {
+      let provisional = nextProvisionalID
+      nextProvisionalID -= 1
+      buffer(.closedTrip(
+        provisionalID: provisional, startedAt: startedAt, detectedAt: detectedAt, endedAt: endedAt, status: status))
+      return provisional
+    }
+    return try queue.write { db in
+      try Self.insertClosedTrip(startedAt: startedAt, detectedAt: detectedAt, endedAt: endedAt, status: status, db)
+    }
+  }
+
+  private static func insertClosedTrip(
+    startedAt: Date, detectedAt: Date, endedAt: Date, status: TripStatus, _ db: Database
+  ) throws -> Int64 {
+    try db.execute(
+      sql: "INSERT INTO trips (startedAt, detectedAt, endedAt, status) VALUES (?, ?, ?, ?)",
+      arguments: [startedAt, detectedAt, endedAt, StoredTripStatus(status).rawValue])
+    return db.lastInsertedRowID
+  }
+
   @discardableResult
   public func saveParking(_ point: ParkPoint, tripID: Int64?) throws -> ParkingWriteOutcome {
     // `perform` returns an outcome for every `.park` write.
@@ -201,47 +258,52 @@ public final class GRDBDetectionStore: DetectionStore {
     let sameTrip = try tripID.flatMap {
       try StoredParking.fetchOne(db, sql: "SELECT * FROM parkings WHERE tripId = ?", arguments: [$0])
     }
-    let newestHigh = try Date.fetchOne(db, sql: "SELECT MAX(parkedAt) FROM parkings WHERE confidence = 'high'")
+    let latestHigh = try StoredParking.fetchOne(
+      db, sql: "SELECT * FROM parkings WHERE confidence = 'high' ORDER BY \(newestFirst) LIMIT 1")
 
     let outcome: ParkingWriteOutcome
-    switch ParkingPolicy.decide(point, tripStatus: tripStatus, sameTrip: sameTrip, newestHighParkedAt: newestHigh) {
+    switch ParkingPolicy.decide(point, tripID: tripID, tripStatus: tripStatus, sameTrip: sameTrip, latestHigh: latestHigh) {
     case let .reject(rejection):
       return rejection
     case let .replace(existingID):
-      try db.execute(
-        sql: """
-          UPDATE parkings SET latitude = ?, longitude = ?, accuracy = ?, confidence = ?, parkedAt = ?, fixAt = ?
-          WHERE id = ?
-          """,
-        arguments: [
-          point.location.latitude, point.location.longitude, point.location.accuracy,
-          point.confidence.rawValue, point.parkedAt, point.location.timestamp, existingID,
-        ])
+      // Delete + insert: the replacement gets a new id, i.e. it is the newest write.
+      try db.execute(sql: "DELETE FROM parkings WHERE id = ?", arguments: [existingID])
       outcome = .replaced
     case .insert:
-      try db.execute(
-        sql: """
-          INSERT INTO parkings (tripId, latitude, longitude, accuracy, confidence, parkedAt, fixAt)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          """,
-        arguments: [
-          tripID, point.location.latitude, point.location.longitude, point.location.accuracy,
-          point.confidence.rawValue, point.parkedAt, point.location.timestamp,
-        ])
       outcome = .inserted
     }
-    // Keep the last 3 (same order as ParkingPolicy.isNewer).
+    try db.execute(
+      sql: """
+        INSERT INTO parkings (tripId, latitude, longitude, accuracy, confidence, parkedAt, fixAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+      arguments: [
+        tripID, point.location.latitude, point.location.longitude, point.location.accuracy,
+        point.confidence.rawValue, point.parkedAt, point.location.timestamp,
+      ])
+    let newID = db.lastInsertedRowID
+    // Keep the last 3 by write order (same order as ParkingPolicy.isNewer).
     try db.execute(
       sql: "DELETE FROM parkings WHERE id NOT IN (SELECT id FROM parkings ORDER BY \(newestFirst) LIMIT ?)",
       arguments: [ParkingPolicy.keepCount])
-    return outcome
+    // The outcome must match the stored data (the engine moves the geofence only if written).
+    let kept = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM parkings WHERE id = ?)", arguments: [newID]) ?? false
+    return kept ? outcome : .notKept
   }
 
-  /// SQL twin of `ParkingPolicy.isNewer`.
-  static let newestFirst = "parkedAt DESC, (confidence = 'high') DESC, id DESC"
+  /// SQL twin of `ParkingPolicy.isNewer`: write order, never the device clock.
+  static let newestFirst = "id DESC"
 
   public func abandonOpenTrips(except tripID: Int64?) throws {
     try database().write { db in
+      // Detach parks first: an uncertain trip has no park (rule 1; the trigger only checks
+      // inserts / tripId updates, not a status change of the trip).
+      try db.execute(
+        sql: """
+          UPDATE parkings SET tripId = NULL
+          WHERE tripId IN (SELECT id FROM trips WHERE status IS NULL AND (? IS NULL OR id != ?))
+          """,
+        arguments: [tripID, tripID])
       try db.execute(
         sql: """
           UPDATE trips SET status = 'uncertain', endedAt = COALESCE(endedAt, startedAt)
@@ -283,6 +345,7 @@ public final class GRDBDetectionStore: DetectionStore {
   /// `sqlite_sequence` is kept on purpose (ids are never reused, see StoreSchema).
   public func deleteAllHistory() throws {
     pending.removeAll()
+    provisionalTripIDs.removeAll()
     let queue = try database()
     try queue.write { db in
       try db.execute(sql: "DELETE FROM parkings")

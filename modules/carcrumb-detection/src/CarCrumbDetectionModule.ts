@@ -30,11 +30,15 @@ declare class CarCrumbDetectionModule extends NativeModule<CarCrumbDetectionModu
   getLastParking(): Promise<ParkingRecord | null>;
   /** Up to 3 parks, current first. Contains coordinates: never log the result. */
   listRecentParkings(): Promise<ParkingRecord[]>;
-  /** Trips, newest first. `limit` is clamped to 1...500 natively. */
+  /**
+   * Trips, newest first. Pass an integer; natively it is rounded to the nearest integer and
+   * clamped to 1...500 (NaN / Infinity → 50).
+   */
   listTrips(limit: number): Promise<TripRecord[]>;
   /**
    * Deletes all history: database rows (+ VACUUM, WAL truncate), engine state (back to IDLE),
-   * the park geofence and debug traces. Rejects with code ERR_DELETE_HISTORY on failure.
+   * the park geofence (resolves only after its removal is confirmed) and debug traces.
+   * Rejects with code ERR_DELETE_HISTORY on failure.
    */
   deleteAllHistory(): Promise<void>;
   /** Debug builds: trace file names, newest first. Release: always []. */

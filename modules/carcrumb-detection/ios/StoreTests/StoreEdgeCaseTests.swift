@@ -7,8 +7,8 @@ import CarCrumbDetection
 // QA edge cases for the store rules (docs/DECISIONS.md, "Hata dengesi" and
 // "Geçmişi silme kontrol listesi"). Runs only on macOS CI (`swift test`).
 //
-// `knownGap` tests use strict `XCTExpectFailure`: green while the gap exists, red once it is
-// fixed — then drop the wrapper and keep the assertions.
+// No open known gaps: the clock-change and pruned-insert gaps were fixed (write-order rules)
+// and their tests now assert directly. A new gap would use strict `XCTExpectFailure`.
 
 /// Same scenarios against both stores (SQL ordering must match `ParkingPolicy.isNewer`).
 enum StoreEdgeScenarios {
@@ -18,35 +18,35 @@ enum StoreEdgeScenarios {
     return trip
   }
 
-  /// Two (three) parks with the same `parkedAt` from different trips: high beats low on the tie,
-  /// the newer row (higher id) beats an equal one, a tied low is rejected.
+  /// Parks with the same `parkedAt` from different trips: order is write order (the newer row
+  /// is current, whatever the confidence); a tied trip-less low is rejected (rule 3).
   static func equalParkedAtTies(_ store: DetectionStore, file: StaticString = #filePath, line: UInt = #line) throws {
     let a = try confirmedTrip(store, at: 600)
-    XCTAssertEqual(try store.saveParking(StoreFixtures.park(600, .low, lat: 41.02), tripID: a), .inserted, file: file, line: line)
+    XCTAssertEqual(try store.saveParking(StoreFixtures.park(600, .high, lat: 41.02), tripID: a), .inserted, file: file, line: line)
     let b = try confirmedTrip(store, at: 600)
-    XCTAssertEqual(try store.saveParking(StoreFixtures.park(600, .high, lat: 41.03), tripID: b), .inserted, file: file, line: line)
-    XCTAssertEqual(try store.lastParking()?.latitude, 41.03, "tie on parkedAt: high first", file: file, line: line)
+    XCTAssertEqual(try store.saveParking(StoreFixtures.park(600, .low, lat: 41.03), tripID: b), .inserted,
+                   "another confirmed trip's low park is a newer write (rule 3 is trip-less only)", file: file, line: line)
+    XCTAssertEqual(try store.lastParking()?.latitude, 41.03, "tie on parkedAt: newer row first, even if low", file: file, line: line)
 
     let c = try confirmedTrip(store, at: 600)
     XCTAssertEqual(try store.saveParking(StoreFixtures.park(600, .high, lat: 41.04), tripID: c), .inserted, file: file, line: line)
     XCTAssertEqual(try store.lastParking()?.latitude, 41.04, "tie on parkedAt and confidence: newer row first", file: file, line: line)
     XCTAssertEqual(try store.recentParkings().map(\.latitude), [41.04, 41.03, 41.02], file: file, line: line)
 
-    let d = try confirmedTrip(store, at: 600)
-    XCTAssertEqual(try store.saveParking(StoreFixtures.park(600, .low, lat: 41.05), tripID: d), .keptHigherConfidence,
-                   "low with parkedAt equal to the newest high is rejected (rule 3)", file: file, line: line)
-    XCTAssertEqual(try store.recentParkings().count, 3, file: file, line: line)
+    XCTAssertEqual(try store.saveParking(StoreFixtures.park(600, .low, lat: 41.05), tripID: nil), .keptHigherConfidence,
+                   "trip-less low with parkedAt equal to the latest high is rejected (rule 3)", file: file, line: line)
+    XCTAssertEqual(try store.recentParkings().map(\.latitude), [41.04, 41.03, 41.02], file: file, line: line)
   }
 
-  /// Pruning keeps the newest 3 by `parkedAt`, not by insertion order; across trips a newer
-  /// low may push an older high out (by design, ParkingPolicy "current park").
-  static func pruningIsByParkedAt(_ store: DetectionStore, file: StaticString = #filePath, line: UInt = #line) throws {
+  /// Pruning keeps the newest 3 by write order (row id), not by `parkedAt` (the device clock
+  /// can jump); across trips a newer low may push an older high out (by design).
+  static func pruningIsByWriteOrder(_ store: DetectionStore, file: StaticString = #filePath, line: UInt = #line) throws {
     for offset in [3000.0, 1000, 2000] {
       try store.saveParking(StoreFixtures.park(offset, .high), tripID: try confirmedTrip(store, at: offset))
     }
     try store.saveParking(StoreFixtures.park(4000, .high), tripID: try confirmedTrip(store, at: 4000))
-    XCTAssertEqual(try store.recentParkings().map(\.parkedAt), [4000, 3000, 2000].map(StoreFixtures.date),
-                   "the 4th park evicts the oldest by parkedAt (1000), not the first inserted (3000)", file: file, line: line)
+    XCTAssertEqual(try store.recentParkings().map(\.parkedAt), [4000, 2000, 1000].map(StoreFixtures.date),
+                   "the 4th park evicts the first written (3000), not the oldest by parkedAt (1000)", file: file, line: line)
 
     for offset in [5000.0, 6000, 7000] {
       XCTAssertEqual(try store.saveParking(StoreFixtures.park(offset, .low), tripID: try confirmedTrip(store, at: offset)),
@@ -77,7 +77,7 @@ enum StoreEdgeScenarios {
 
   static func runAll(_ make: () throws -> DetectionStore) throws {
     try equalParkedAtTies(make())
-    try pruningIsByParkedAt(make())
+    try pruningIsByWriteOrder(make())
     try deleteWhileTripOpen(make())
   }
 }
@@ -90,7 +90,7 @@ final class GRDBStoreEdgeCaseTests: TemporaryDirectoryTestCase {
   }
 
   func testEqualParkedAtTies() throws { try StoreEdgeScenarios.equalParkedAtTies(fresh()) }
-  func testPruningIsByParkedAt() throws { try StoreEdgeScenarios.pruningIsByParkedAt(fresh()) }
+  func testPruningIsByWriteOrder() throws { try StoreEdgeScenarios.pruningIsByWriteOrder(fresh()) }
   func testDeleteWhileTripOpen() throws { try StoreEdgeScenarios.deleteWhileTripOpen(fresh()) }
 
   // MARK: Migration
@@ -154,11 +154,11 @@ final class GRDBStoreEdgeCaseTests: TemporaryDirectoryTestCase {
     XCTAssertEqual(relaunched.pendingWriteCount, 0)
   }
 
-  // MARK: Clock set back (known gaps)
+  // MARK: Clock changes (formerly known gaps, fixed: order is write order)
 
   /// The device clock goes back (manual change / wrong RTC after reboot) between two trips.
-  /// The newest written confirmed park gets an older `parkedAt` and is not "current":
-  /// DECISIONS "en son park = en yeni onaylı kayıt" vs. ordering by device time.
+  /// The newest written confirmed park gets an older `parkedAt` and is still "current":
+  /// DECISIONS "en son park = en yeni onaylı kayıt".
   func testClockSetBackNewestWrittenParkIsCurrent() throws {
     let store = makeStore()
     let a = try store.beginTrip(startedAt: StoreFixtures.date(9_400))
@@ -169,15 +169,27 @@ final class GRDBStoreEdgeCaseTests: TemporaryDirectoryTestCase {
     try store.endTrip(tripID: b, status: .confirmed, endedAt: StoreFixtures.date(5_000))
     XCTAssertEqual(try store.saveParking(StoreFixtures.park(5_000, .high, lat: 41.03), tripID: b), .inserted)
 
-    let current = try store.lastParking()?.latitude
-    XCTExpectFailure("KNOWN GAP (store): current park is ordered by device time, not by write order") {
-      XCTAssertEqual(current, 41.03)
-    }
+    XCTAssertEqual(try store.lastParking()?.latitude, 41.03)
   }
 
-  /// A park older than the 3 kept ones is inserted and pruned in the same transaction, yet
-  /// reported as `.inserted`. The engine then moves the geofence (Karar D) to a park that
-  /// does not exist in the store. Outcome and stored data must agree.
+  /// The device clock is ahead (wrong time) for one trip and corrected before the next:
+  /// the future-dated park neither stays "current" nor blocks the next one.
+  func testClockSetForwardNewestWrittenParkIsCurrent() throws {
+    let store = makeStore()
+    let a = try store.beginTrip(startedAt: StoreFixtures.date(86_400 + 9_400))
+    try store.endTrip(tripID: a, status: .confirmed, endedAt: StoreFixtures.date(86_400 + 10_000))
+    try store.saveParking(StoreFixtures.park(86_400 + 10_000, .high, lat: 41.02), tripID: a) // clock 1 day ahead
+    // Clock corrected; the user drives again and parks elsewhere (low confidence).
+    let b = try store.beginTrip(startedAt: StoreFixtures.date(9_400))
+    try store.endTrip(tripID: b, status: .confirmed, endedAt: StoreFixtures.date(10_000))
+    XCTAssertEqual(try store.saveParking(StoreFixtures.park(10_000, .low, lat: 41.03), tripID: b), .inserted)
+    XCTAssertEqual(try store.lastParking()?.latitude, 41.03)
+    XCTAssertEqual(try store.recentParkings().map(\.latitude), [41.03, 41.02])
+  }
+
+  /// A park older (by `parkedAt`) than the 3 kept ones used to be inserted and pruned in the
+  /// same transaction yet reported as `.inserted`. With write-order pruning a new row is always
+  /// kept; the store also checks the row after pruning. Outcome and stored data must agree.
   func testInsertedOutcomeMeansParkIsStored() throws {
     let store = makeStore()
     for offset in [10_000.0, 11_000, 12_000] {
@@ -191,9 +203,9 @@ final class GRDBStoreEdgeCaseTests: TemporaryDirectoryTestCase {
     let stored = try store.recentParkings().contains { $0.tripID == late }
 
     XCTAssertEqual(try store.recentParkings().count, 3)
-    XCTExpectFailure("KNOWN GAP (store): insert pruned in the same transaction is reported as written") {
-      XCTAssertEqual(outcome.wasWritten, stored)
-    }
+    XCTAssertEqual(outcome, .inserted)
+    XCTAssertEqual(outcome.wasWritten, stored)
+    XCTAssertEqual(try store.lastParking()?.tripID, late, "newest write is current despite the older parkedAt")
   }
 }
 

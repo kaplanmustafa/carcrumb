@@ -87,9 +87,10 @@ public class CarCrumbDetectionModule: Module {
       }
     }
 
-    /// Newest first. `limit` is clamped to 1...500.
-    AsyncFunction("listTrips") { (limit: Int, promise: Promise) in
-      let clamped = min(max(limit, 1), 500)
+    /// Newest first. `limit` is a JS number: rounded to the nearest integer and clamped to
+    /// 1...500 (non-finite → 50). Taken as Double so 10.5 or 1e3 never fail the conversion.
+    AsyncFunction("listTrips") { (limit: Double, promise: Promise) in
+      let clamped = limit.isFinite ? Int(min(max(limit.rounded(), 1), 500)) : 50
       DetectionEngine.shared.readStore({ try $0.trips(limit: clamped) }) { result in
         switch result {
         case let .success(trips): promise.resolve(trips.map(BridgeValues.trip))
@@ -99,7 +100,8 @@ public class CarCrumbDetectionModule: Module {
     }
 
     /// Deletes all history (docs/DECISIONS.md checklist, see DetectionEngine.deleteAllHistory).
-    /// Rejects with ERR_DELETE_HISTORY and the failed step ("database" | "stateFile" | "traces").
+    /// Resolves after the CLMonitor park condition is confirmed removed. Rejects with
+    /// ERR_DELETE_HISTORY and the failed step ("database" | "stateFile" | "geofence" | "traces").
     AsyncFunction("deleteAllHistory") { (promise: Promise) in
       DetectionEngine.shared.deleteAllHistory { result in
         switch result {
