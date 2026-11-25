@@ -1,0 +1,77 @@
+# CI: build and test only. No AI review here (docs/DECISIONS.md).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  js:
+    name: TypeScript + Jest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx jest --passWithNoTests --ci
+
+  swift-core:
+    name: Detection core (swift test)
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select newest Xcode 26+
+        run: ./.github/scripts/select-xcode.sh
+      - name: Swift version
+        run: swift --version
+      - name: Test state machine
+        working-directory: modules/carcrumb-detection
+        run: swift test
+
+  ios-build:
+    name: iOS simulator build
+    runs-on: macos-26
+    timeout-minutes: 60
+    needs: [js, swift-core]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - name: Select newest Xcode 26+
+        run: ./.github/scripts/select-xcode.sh
+      - name: Generate native project
+        run: npx expo prebuild -p ios --no-install --clean
+      - name: Install pods
+        working-directory: ios
+        run: pod install
+      - name: Build (no signing)
+        run: |
+          set -o pipefail
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tail -200

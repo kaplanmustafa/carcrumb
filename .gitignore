@@ -43,3 +43,7 @@ yarn-error.*
 # CarCrumb: recorded field traces may contain real coordinates; commit only synthetic_ ones
 fixtures/traces/*.json
 !fixtures/traces/synthetic_*.json
+
+# SwiftPM
+.build/
+.swiftpm/
