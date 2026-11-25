@@ -8,6 +8,7 @@
   // Keeps expo/tsconfig.base's excludes (an exclude here replaces them) and adds tests.
   "exclude": [
     "node_modules",
+    ".claude",
     "babel.config.js",
     "metro.config.js",
     "jest.config.js",
