@@ -110,7 +110,14 @@ export function StatusLabel({ title, iconName, tone }: { title: string; iconName
   return (
     <Label
       title={title}
-      icon={<Image systemName={icon[iconName]} modifiers={[foregroundStyle(color.status[tone])]} />}
+      icon={
+        // The icon is its own hosted view, so it does not inherit the Label's font:
+        // give it the same text style or it stays small at large Dynamic Type sizes.
+        <Image
+          systemName={icon[iconName]}
+          modifiers={[font({ textStyle: typography.heading.textStyle }), foregroundStyle(color.status[tone])]}
+        />
+      }
       modifiers={[font({ textStyle: typography.heading.textStyle }), foregroundStyle(color.text.primary)]}
     />
   );
