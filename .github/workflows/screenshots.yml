@@ -1,0 +1,97 @@
+# UI screenshots from the iOS Simulator (Windows dev machine has no simulator).
+# Release build with EXPO_PUBLIC_PREVIEW=1 so the JS bundle is embedded and the
+# design preview screens can be selected with a launch argument.
+name: Screenshots
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'App.tsx'
+      - 'src/**'
+      - '.github/workflows/screenshots.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshots:
+    runs-on: macos-26
+    timeout-minutes: 75
+    env:
+      EXPO_PUBLIC_PREVIEW: '1'
+      BUNDLE_ID: app.carcrumb.ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - name: Select newest Xcode 26+
+        run: ./.github/scripts/select-xcode.sh
+      - name: Generate native project
+        run: npx expo prebuild -p ios --no-install --clean
+      - name: Install pods
+        working-directory: ios
+        run: pod install || { echo "pod install failed, retrying once"; pod install; }
+      - name: Build Release for the simulator (JS bundle embedded)
+        run: |
+          set -o pipefail
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          xcodebuild -workspace "$WORKSPACE" -scheme "$SCHEME" -configuration Release \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -50
+      - name: Boot an iPhone simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)["devices"]
+          ios = sorted((k for k in d if "iOS" in k), key=lambda k: [int(x) for x in k.rsplit("iOS-", 1)[1].split("-")])
+          for rt in reversed(ios):
+              phones = [x for x in d[rt] if x["name"].startswith("iPhone") and "Pro" in x["name"] and "Max" not in x["name"]]
+              if phones:
+                  print(phones[-1]["udid"]); break
+          ')
+          test -n "$UDID" || { xcrun simctl list devices available; exit 1; }
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3
+      - name: Install app
+        run: |
+          APP=$(ls -d build/Build/Products/Release-iphonesimulator/*.app | head -1)
+          xcrun simctl install "$UDID" "$APP"
+      - name: Capture screenshots
+        run: |
+          mkdir -p screenshots
+          shot() { # name appearance content_size screen
+            xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
+            xcrun simctl ui "$UDID" appearance "$2"
+            xcrun simctl ui "$UDID" content_size "$3"
+            if [ "$4" = "app" ]; then
+              xcrun simctl launch "$UDID" "$BUNDLE_ID"
+            else
+              xcrun simctl launch "$UDID" "$BUNDLE_ID" -previewScreen "$4"
+            fi
+            sleep 8
+            xcrun simctl io "$UDID" screenshot "screenshots/$1.png"
+          }
+          shot 01-home-light            light large app
+          shot 02-states-light          light large states
+          shot 03-states-dark           dark  large states
+          shot 04-components-light      light large components
+          shot 05-components-dark       dark  large components
+          shot 06-permission-light      light large permission
+          shot 07-states-largest-text   light accessibility-extra-extra-extra-large states
+          ls -la screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/
+          retention-days: 14

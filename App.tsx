@@ -3,8 +3,15 @@ import { useEffect, useState } from 'react';
 import CarCrumbDetection, { type DetectionStateName } from './modules/carcrumb-detection';
 import { Screen, Section, StatusLabel, Txt } from './src/design/components';
 import { statePresentation } from './src/features/detection/presentation';
+import { DesignPreview, requestedPreview } from './src/features/preview/DesignPreview';
 
 export default function App() {
+  const preview = requestedPreview();
+  if (preview) return <DesignPreview screen={preview} />;
+  return <DetectionHome />;
+}
+
+function DetectionHome() {
   const [state, setState] = useState<DetectionStateName>(() => CarCrumbDetection.getState());
 
   useEffect(() => {
