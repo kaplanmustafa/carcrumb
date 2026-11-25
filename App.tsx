@@ -1,7 +1,8 @@
-import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+
 import CarCrumbDetection, { type DetectionStateName } from './modules/carcrumb-detection';
+import { Group, Screen, StatusLabel, Txt } from './src/design/components';
+import { statePresentation } from './src/features/detection/presentation';
 
 export default function App() {
   const [state, setState] = useState<DetectionStateName>(() => CarCrumbDetection.getState());
@@ -11,16 +12,14 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
+  const p = statePresentation[state];
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>CarCrumb</Text>
-      <Text>Algılama durumu: {state}</Text>
-      <StatusBar style="auto" />
-    </View>
+    <Screen title="CarCrumb">
+      <Group title="Durum" footer="Konum verilerin yalnızca bu cihazda kalır.">
+        <StatusLabel title={p.title} iconName={p.iconName} tone={p.tone} />
+        <Txt tone="secondary">{p.description}</Txt>
+      </Group>
+    </Screen>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
-  title: { fontSize: 24, fontWeight: '600' },
-});
