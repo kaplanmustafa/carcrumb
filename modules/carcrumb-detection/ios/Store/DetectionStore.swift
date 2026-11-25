@@ -46,7 +46,8 @@ public protocol DetectionStore: AnyObject {
   func lastParking() throws -> StoredParking?
   /// Up to `ParkingPolicy.keepCount` parks, current first.
   func recentParkings() throws -> [StoredParking]
-  /// Newest first (by start).
+  /// Newest first by write order (row id), not by `startedAt`: the device clock can jump,
+  /// write order cannot (same reasoning as `ParkingPolicy`).
   func trips(limit: Int) throws -> [StoredTrip]
 
   /// History deletion, store part (docs/DECISIONS.md, "Geçmişi silme kontrol listesi"):
@@ -236,7 +237,7 @@ public final class InMemoryDetectionStore: DetectionStore {
   }
 
   public func trips(limit: Int) throws -> [StoredTrip] {
-    Array(tripRows.sorted { ($0.startedAt, $0.id) > ($1.startedAt, $1.id) }.prefix(max(0, limit)))
+    Array(tripRows.sorted { $0.id > $1.id }.prefix(max(0, limit)))
   }
 
   public func deleteAllHistory() throws {

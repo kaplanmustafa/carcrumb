@@ -332,7 +332,7 @@ public final class GRDBDetectionStore: DetectionStore {
   public func trips(limit: Int) throws -> [StoredTrip] {
     try database().read { db in
       try StoredTrip.fetchAll(
-        db, sql: "SELECT * FROM trips ORDER BY startedAt DESC, id DESC LIMIT ?",
+        db, sql: "SELECT * FROM trips ORDER BY id DESC LIMIT ?", // write order, see DetectionStore
         arguments: [max(0, limit)])
     }
   }

@@ -213,7 +213,20 @@ enum StoreRuleScenarios {
     XCTAssertNil(try store.trips(limit: 10).first?.status, file: file, line: line)
   }
 
+  /// Clock set back between trips: the trip list follows write order, not `startedAt`.
+  static func tripsFollowWriteOrderAcrossClockChange(_ store: DetectionStore, file: StaticString = #filePath, line: UInt = #line) throws {
+    let first = try store.beginTrip(startedAt: StoreFixtures.date(10_000))
+    let second = try store.beginTrip(startedAt: StoreFixtures.date(2_000)) // clock moved back
+    let third = try store.saveClosedTrip(
+      startedAt: StoreFixtures.date(50_000), detectedAt: StoreFixtures.date(50_000),
+      endedAt: StoreFixtures.date(50_600), status: .confirmed) // clock ahead
+    let fourth = try store.beginTrip(startedAt: StoreFixtures.date(3_000))
+    XCTAssertEqual(try store.trips(limit: 10).map(\.id), [fourth, third, second, first], file: file, line: line)
+    XCTAssertEqual(try store.trips(limit: 2).map(\.id), [fourth, third], file: file, line: line)
+  }
+
   static func runAll(_ make: () throws -> DetectionStore) throws {
+    try tripsFollowWriteOrderAcrossClockChange(make())
     try keepsLastThree(make())
     try sameTripLowDoesNotReplaceHigh(make())
     try sameTripHighReplacesLow(make())

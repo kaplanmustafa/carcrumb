@@ -338,17 +338,18 @@ final class LocationSensor: NSObject {
     }
   }
 
-  /// History deletion: removes the park condition and confirms that the monitor no longer
-  /// lists it. Returns false if the monitor could not be opened or the condition is still
-  /// there. Runs in the same serialized chain as set/clear (after any earlier operation).
-  func clearGeofenceVerified() async -> Bool {
-    await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-      enqueueGeofenceOperation(onUnavailable: { cont.resume(returning: false) }) { [weak self] monitor in
+  /// History deletion: removes the park condition and checks that the monitor no longer
+  /// lists it. `.monitorUnavailable` when the monitor could not be opened (e.g. no location
+  /// permission); how that counts is decided by `GeofenceClearPolicy`. Runs in the same
+  /// serialized chain as set/clear (after any earlier operation).
+  func clearGeofenceVerified() async -> GeofenceClearResult {
+    await withCheckedContinuation { (cont: CheckedContinuation<GeofenceClearResult, Never>) in
+      enqueueGeofenceOperation(onUnavailable: { cont.resume(returning: .monitorUnavailable) }) { [weak self] monitor in
         await monitor.remove(Self.parkConditionID)
         let ids = await monitor.identifiers
         let gone = !ids.contains(Self.parkConditionID)
         if gone { self?.geofenceActive = false }
-        cont.resume(returning: gone)
+        cont.resume(returning: gone ? .removed : .stillPresent)
       }
     }
   }

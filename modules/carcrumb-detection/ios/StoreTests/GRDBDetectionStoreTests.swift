@@ -24,6 +24,9 @@ final class GRDBDetectionStoreRuleTests: TemporaryDirectoryTestCase {
   func testTripLifecycle() throws { try StoreRuleScenarios.tripLifecycle(fresh()) }
   func testAbandonOpenTrips() throws { try StoreRuleScenarios.abandonOpenTrips(fresh()) }
   func testTripsNewestFirstWithLimit() throws { try StoreRuleScenarios.tripsNewestFirstWithLimit(fresh()) }
+  func testTripsFollowWriteOrderAcrossClockChange() throws {
+    try StoreRuleScenarios.tripsFollowWriteOrderAcrossClockChange(fresh())
+  }
   func testDeleteAllKeepsIDsIncreasing() throws { try StoreRuleScenarios.deleteAllKeepsIDsIncreasing(fresh()) }
 }
 

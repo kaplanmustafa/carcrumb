@@ -28,16 +28,18 @@ declare class CarCrumbDetectionModule extends NativeModule<CarCrumbDetectionModu
    * Contains coordinates: never log the result.
    */
   getLastParking(): Promise<ParkingRecord | null>;
-  /** Up to 3 parks, current first. Contains coordinates: never log the result. */
+  /** Up to 3 parks, current (newest written) first. Contains coordinates: never log the result. */
   listRecentParkings(): Promise<ParkingRecord[]>;
   /**
-   * Trips, newest first. Pass an integer; natively it is rounded to the nearest integer and
+   * Trips, newest written first (not sorted by startedAt: the device clock can jump; sort
+   * in the UI if a by-time view is needed). Pass an integer; natively it is rounded to the nearest integer and
    * clamped to 1...500 (NaN / Infinity → 50).
    */
   listTrips(limit: number): Promise<TripRecord[]>;
   /**
    * Deletes all history: database rows (+ VACUUM, WAL truncate), engine state (back to IDLE),
-   * the park geofence (resolves only after its removal is confirmed) and debug traces.
+   * the park geofence (resolves only after its removal is confirmed; without location
+   * permission there is no monitor and this step succeeds) and debug traces.
    * Rejects with code ERR_DELETE_HISTORY on failure.
    */
   deleteAllHistory(): Promise<void>;

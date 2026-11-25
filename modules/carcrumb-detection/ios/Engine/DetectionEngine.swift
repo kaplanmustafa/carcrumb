@@ -374,7 +374,8 @@ public final class DetectionEngine: @unchecked Sendable {
   /// 2. SQLite rows + VACUUM + WAL checkpoint(TRUNCATE) (`store.deleteAllHistory`),
   /// 3. `state.json` deleted (it can hold the ring buffer = coordinates),
   /// 4. CLMonitor park condition (`lastPark`) removed, awaited and verified: the completion
-  ///    is called only after the monitor no longer lists it,
+  ///    is called only after the monitor answered; without a monitor (no location
+  ///    permission) the step succeeds (`GeofenceClearPolicy`),
   /// 5. debug trace directory `traces/` deleted.
   /// Every step runs even if an earlier one fails; the completion reports the first failure
   /// in this order (step name only, never paths or coordinates). Runs on the engine queue, so
@@ -414,23 +415,25 @@ public final class DetectionEngine: @unchecked Sendable {
       }
 
       // 4. Park geofence on the main actor, FIFO after the stopGPS above; completes after
-      //    CLMonitor confirmed the removal.
+      //    CLMonitor answered. Without a monitor (konumsuz mod) the step succeeds; only a
+      //    condition that is provably still registered fails it (GeofenceClearPolicy).
       let syncFailure: DeleteHistoryError? =
         databaseFailed ? .database : stateFileFailed ? .stateFile : nil
       let tracesFailure: DeleteHistoryError? = tracesFailed ? .traces : nil
-      let finish: @Sendable (Bool) -> Void = { geofenceCleared in
+      let finish: @Sendable (GeofenceClearResult) -> Void = { result in
         self.queue.async {
-          let geofenceFailure: DeleteHistoryError? = geofenceCleared ? nil : .geofence
+          let geofenceFailure: DeleteHistoryError? = GeofenceClearPolicy.succeeded(result) ? nil : .geofence
           let failure: DeleteHistoryError? = syncFailure ?? geofenceFailure ?? tracesFailure
-          self.log.info("history deleted (was \(old.name, privacy: .public), failed step: \(failure?.rawValue ?? "none", privacy: .public))")
+          self.log.info("history deleted (was \(old.name, privacy: .public), geofence: \(result.rawValue, privacy: .public), failed step: \(failure?.rawValue ?? "none", privacy: .public))")
           completion(failure.map { .failure($0) } ?? .success(()))
         }
       }
       DispatchQueue.main.async {
         MainActor.assumeIsolated {
           guard let location = self.location else {
-            // Engine not started: no monitor to verify against.
-            finish(false)
+            // Engine not started: this process never opened the monitor, so it cannot have
+            // registered a condition through it (see GeofenceClearPolicy).
+            finish(.monitorUnavailable)
             return
           }
           Task { @MainActor in
@@ -442,7 +445,9 @@ public final class DetectionEngine: @unchecked Sendable {
   }
 
   /// Which step of history deletion failed (no paths, no error text).
-  /// `geofence`: the CLMonitor `lastPark` condition could not be confirmed removed.
+  /// `geofence`: the monitor is open but still lists the `lastPark` condition after removal.
+  /// Not used when the monitor cannot be opened (no location permission): see
+  /// `GeofenceClearPolicy`.
   public enum DeleteHistoryError: String, Error {
     case database, stateFile, geofence, traces
   }
