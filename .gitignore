@@ -41,8 +41,9 @@ yarn-error.*
 /android
 
 # CarCrumb: recorded field traces may contain real coordinates; commit only synthetic_ ones
-fixtures/traces/*.json
-!fixtures/traces/synthetic_*.json
+fixtures/traces/*
+!fixtures/traces/synthetic_*
+!fixtures/traces/.gitkeep
 
 # SwiftPM
 .build/

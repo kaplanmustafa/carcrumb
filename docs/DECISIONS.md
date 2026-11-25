@@ -64,13 +64,19 @@ Trafikte duran araç "Olası park"tan "Sürüş"e geri döner; park ancak yürü
 **Kurallar:**
 
 - **Uyandırıcılar:** Önemli konum değişikliği, CLVisit ve son park noktası etrafında ~150 m geofence. Geofence, zorla kapatmaya en dayanıklı uyanma yolu.
-- **Gerçek başlangıç:** Uyanınca `queryActivityStarting` ile son 7 günün hareket kaydından sürüşün gerçek başlangıcı geriye dönük bulunur.
+- **Gerçek başlangıç:** Uyanınca `queryActivityStarting` ile en fazla son 2 saatin hareket kaydından (önceki yolculuğun bitişinden geriye gitmeden) sürüşün gerçek başlangıcı geriye dönük bulunur. 7 günlük sorgu yalnızca kurtarma içindir.
 - **Sürüş sırasında:** `CLLocationUpdate.liveUpdates(.automotiveNavigation)` + `CLBackgroundActivitySession`. Mavi gösterge yalnızca bu sırada yanar.
 - **Trafik ile park ayrımı:** Kırmızı ışıkta `automotive` ve `stationary` birlikte true gelir; karar süreye değil, yürüme başlangıcı + 30–50 m uzaklaşmaya dayanır.
-- **Park noktası:** Son GPS noktası değil; son ~60 sn'lik halka tamponda `automotive → walking` geçiş anındaki konum.
+- **Park noktası:** Son GPS noktası değil; son ~60 sn'lik halka tamponda `automotive → walking` geçiş anındaki konum. Geçiş anı, Core Motion'ın bildirdiği yürüme başlangıç zamanıdır (olayın ulaştığı an değil). Tamponda o andan önceki, doğruluğu iyi olan son nokta seçilir; güveni süre değil olayların sırası belirler: GPS araç durmadan önce bozulduysa ya da kaybolduysa (kapalı otopark) güven düşük; araç durduktan sonra GPS sustuysa (kullanıcı araçta oturuyor) güven yüksektir. "Hareket" kanıtı yalnızca GPS'te yürüme hızının üstündeki araç hızıdır (~2,5 m/s üstü; yavaş akan trafik dahil); yürüme hızı ve tek başına Core Motion `automotive` hareket sayılmaz. Sürüşün onayı ise ayrıca ~5 m/s ister.
+- **Park onayı:** Son hareket yürüme olmalı, hız ~2,5 m/s altında olmalı ve uzaklık, konum doğruluk payı düşüldükten sonra 30–50 m eşiğini geçmeli.
+- **Zaman aşımları (24 Kasım 2026):** Olası parkta 10 dk boyunca araç hareketi yoksa park düşük güvenle yazılır (araç bağlantısı yoksa yolculuk "belirsiz" kapanır). Sürüşte 15 dk hareketsizlik + araç bağlantısının kopması sürüş sonu sayılır; park duruş noktasına düşük güvenle yazılır (telefonu araçta unutma). Olası parkta 10 dk dolduğunda araç bağlantısı hâlâ açıksa park yazılmaz, sürüşe dönülür. Mutlak sınır: sürüşte 60 dk hareketsizlikte bağlantı açık olsa bile yolculuk biter, park düşük güvenle yazılır. GPS hiçbir durumda süresiz açık kalmaz.
 - **Araç sinyali:** İlk 2–3 yolculuktan sonra ortak Bluetooth cihazı önerilir ("Bu senin araban mı?"). `.carAudio` veya kayıtlı araç portu güveni artırır; kopması güçlü bitiş sinyalidir.
 - **Hata dengesi:** Düşük güvenli park kaydı yüksek güvenlinin üzerine yazılmaz; son 3 park noktası tutulur. Araç bağlantısı olmayan yolculuk "belirsiz" kaydedilir, onaylanana kadar istatistiğe girmez ve park yazmaz.
+- **Geofence:** Park geofence'i yalnızca yeni bir park yazılınca değişir; bağlantısız ("belirsiz") bir yolculuk onu silmez.
+- **Durum geri yükleme:** Olası parkta kalmış ve araç bağlantısı olan yolculuk, geri yüklemede süresi ne olursa olsun düşük güvenli park olarak kapanır.
 - **Kurtarma:** Uygulama uzun süre uyanamadıysa, açılışta 7 günlük hareket geçmişinden kaçırılan yolculuklar rotasız, "kurtarılan" etiketiyle çıkarılır.
+
+**Geçmişi silme kontrol listesi:** SQLite satırları + `VACUUM` + WAL checkpoint, motor durum dosyası (`state.json`) silinip motor IDLE'a alınır, CLMonitor park koşulu kaldırılır, debug kayıt dizini (`traces/`) silinir.
 
 ## Teknik kararlar
 
@@ -79,6 +85,7 @@ Algılama ve veri yazımı tamamen Swift'te; React Native yalnızca arayüz. Uyg
 | Karar | Seçim | Gerekçe |
 | --- | --- | --- |
 | Arayüz | React Native + Expo (dev client) + TypeScript | Windows'ta geliştirme; EAS ile bulutta iOS derlemesi |
+| Tasarım sistemi | `@expo/ui` (SwiftUI bileşenleri) + kendi token'larımız (renk, tipografi, boşluk, köşe) ve küçük bir CarCrumb bileşen seti | iOS'a yerli görünüm; Dynamic Type, karanlık mod ve erişilebilirlik sistemden gelir. Ekranlar doğrudan stil değeri yazmaz, token ve bileşen kullanır (24 Kasım 2026) |
 | Native modül | Swift, Expo Modules API | Core Location, Core Motion, AVAudioSession, CMAltimeter erişimi |
 | Minimum iOS | 18 | `CLServiceSession` ve teşhis bayrakları; iOS 17 desteği bakım yükünü artırır |
 | Veritabanı | SQLite (GRDB, WAL), **tek yazıcı Swift** | İki yazıcı arka planda bozulma riski; JS native modül üzerinden okur |

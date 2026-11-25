@@ -1,0 +1,15 @@
+{"event":{"source":"significantLocationChange","type":"wake"},"t":1800000000}
+{"event":{"connected":true,"type":"carLink"},"t":1800000001}
+{"event":{"activity":"automotive","type":"motion"},"t":1800000005}
+{"event":{"sample":{"accuracy":8,"latitude":41.01,"longitude":-39.99,"speed":12,"timestamp":1800000010},"type":"location"},"t":1800000010}
+{"event":{"sample":{"accuracy":7,"latitude":41.006,"longitude":-39.994,"speed":1,"timestamp":1800000300},"type":"location"},"t":1800000300}
+{"event":{"activity":"walking","type":"motion"},"t":1800000305}
+{"event":{"sample":{"accuracy":7,"latitude":41.00585,"longitude":-39.994,"speed":2,"timestamp":1800000330},"type":"location"},"t":1800000330}
+{"event":{"sample":{"accuracy":7,"latitude":41.0057,"longitude":-39.994,"speed":2,"timestamp":1800000360},"type":"location"},"t":1800000360}
+{"event":{"sample":{"accuracy":7,"latitude":41.00555,"longitude":-39.994,"speed":2,"timestamp":1800000390},"type":"location"},"t":1800000390}
+{"event":{"activity":"automotive","type":"motion"},"t":1800000400}
+{"event":{"sample":{"accuracy":6,"latitude":41.0053,"longitude":-39.994,"speed":10,"timestamp":1800000410},"type":"location"},"t":1800000410}
+{"event":{"sample":{"accuracy":5,"latitude":41.0,"longitude":-40.0,"speed":0,"timestamp":1800000600},"type":"location"},"t":1800000600}
+{"event":{"connected":false,"type":"carLink"},"t":1800000602}
+{"event":{"activity":"walking","type":"motion"},"t":1800000605}
+{"event":{"sample":{"accuracy":7,"latitude":41.0005,"longitude":-40.0,"speed":1.2,"timestamp":1800000660},"type":"location"},"t":1800000660}
