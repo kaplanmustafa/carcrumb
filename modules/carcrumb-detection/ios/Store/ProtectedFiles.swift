@@ -5,9 +5,15 @@ import Foundation
 /// Protection is `completeUntilFirstUserAuthentication` (docs/DECISIONS.md, "Dosya koruması"):
 /// readable/writable in the background after the first unlock since boot. `.complete` would
 /// make writes fail when a background wake happens with the screen locked.
+///
+/// Lives in Store/ (Foundation only) because both the SQLite store and the engine's
+/// `StateFile` / `TraceRecorder` use it.
 enum ProtectedFiles {
+  static let protection = FileProtectionType.completeUntilFirstUserAuthentication
+
   /// Application Support/<relativePath>, created with the right protection and excluded
-  /// from iCloud/iTunes backup (detection state and traces are device-local by design).
+  /// from iCloud/iTunes backup (detection state, history and traces are device-local by design).
+  /// New files created inside inherit the directory's protection class.
   static func directory(_ relativePath: String) throws -> URL {
     let base = try FileManager.default.url(
       for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -15,7 +21,7 @@ enum ProtectedFiles {
     if !FileManager.default.fileExists(atPath: dir.path) {
       try FileManager.default.createDirectory(
         at: dir, withIntermediateDirectories: true,
-        attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+        attributes: [.protectionKey: protection])
     }
     try excludeFromBackup(&dir)
     return dir
@@ -27,48 +33,20 @@ enum ProtectedFiles {
     try url.setResourceValues(values)
   }
 
+  /// Sets the protection class explicitly on an existing file (no-op if it does not exist).
+  /// Only meaningful on iOS; macOS (`swift test`) has no per-file data protection classes.
+  static func protectExistingFile(at url: URL) throws {
+    #if os(iOS)
+    guard FileManager.default.fileExists(atPath: url.path) else { return }
+    try FileManager.default.setAttributes([.protectionKey: protection], ofItemAtPath: url.path)
+    #endif
+  }
+
   /// Atomic replace. `.atomic` writes a temp file and renames; the protection option
   /// applies to the final file.
   static func writeAtomically(_ data: Data, to url: URL) throws {
     try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     var u = url
     try excludeFromBackup(&u)
-  }
-}
-
-/// Last detection state on disk (`Application Support/CarCrumb/engine/state.json`).
-/// Called only on the engine queue.
-final class StateFile {
-  private let encoder: JSONEncoder = {
-    let e = JSONEncoder()
-    e.dateEncodingStrategy = .secondsSince1970
-    return e
-  }()
-  private let decoder: JSONDecoder = {
-    let d = JSONDecoder()
-    d.dateDecodingStrategy = .secondsSince1970
-    return d
-  }()
-
-  // Resolved lazily and retried: before the first unlock after a reboot the container is
-  // not accessible yet (a background wake can happen then), so resolution may fail once.
-  private var resolvedURL: URL?
-  private var url: URL? {
-    if resolvedURL == nil {
-      resolvedURL = (try? ProtectedFiles.directory("CarCrumb/engine"))?.appendingPathComponent("state.json")
-    }
-    return resolvedURL
-  }
-
-  init() {}
-
-  func load() -> PersistedDetectionState? {
-    guard let url, let data = try? Data(contentsOf: url) else { return nil }
-    return try? decoder.decode(PersistedDetectionState.self, from: data)
-  }
-
-  func save(_ value: PersistedDetectionState) throws {
-    guard let url else { return }
-    try ProtectedFiles.writeAtomically(try encoder.encode(value), to: url)
   }
 }
