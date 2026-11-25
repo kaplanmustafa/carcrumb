@@ -1,10 +1,10 @@
 // Every committed trace must be synthetic: all coordinates must stay inside the agreed
-// synthetic area (41.0±0.1, 29.0±0.1). A real field trace renamed to synthetic_* fails here.
+// synthetic area (41.0±0.1, -40.0±0.1: open Atlantic, nobody lives there). A real field trace renamed to synthetic_* fails here.
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const DIR = 'fixtures/traces';
-const BOX = { lat: [40.9, 41.1], lon: [28.9, 29.1] };
+const BOX = { lat: [40.9, 41.1], lon: [-40.1, -39.9] };
 let bad = 0;
 
 function walk(value, visit) {

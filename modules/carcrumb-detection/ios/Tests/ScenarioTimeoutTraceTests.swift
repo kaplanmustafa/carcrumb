@@ -43,9 +43,9 @@ final class ScenarioTimeoutTraceTests: XCTestCase {
     fx.filter { $0 == effect }.count
   }
 
-  /// The stop point shared by most fixtures: 41.0 / 29.0, acc 5 m, speed 0, t+600.
+  /// The stop point shared by most fixtures: 41.0 / -40.0, acc 5 m, speed 0, t+600.
   var stop: LocationSample {
-    LocationSample(latitude: 41.0, longitude: 29.0, accuracy: 5, speed: 0, timestamp: at(600))
+    LocationSample(latitude: 41.0, longitude: -40.0, accuracy: 5, speed: 0, timestamp: at(600))
   }
 
   /// No throwing asserts (XCTUnwrap) inside: an error escaping the block is recorded outside
@@ -75,7 +75,7 @@ final class ScenarioTimeoutTraceTests: XCTestCase {
     let parks = parkings(result.effects)
     XCTAssertEqual(parks.count, 1)
     XCTAssertEqual(parks.first?.location.latitude, 41.0)
-    XCTAssertEqual(parks.first?.location.longitude, 29.0)
+    XCTAssertEqual(parks.first?.location.longitude, -40.0)
     XCTAssertEqual(parks.first?.confidence, .low)
     XCTAssertEqual(parks.first?.parkedAt, at(598))
   }
@@ -95,7 +95,7 @@ final class ScenarioTimeoutTraceTests: XCTestCase {
 
   /// Walking reported while sitting in the car with CarPlay on (t+608). Nothing confirms for
   /// 10 min; at the t+1210 tick the link is still connected → DRIVING (same trip, GPS on).
-  /// Then the car drives on and parks for real at 40.99 / 28.99 after the link drops.
+  /// Then the car drives on and parks for real at 40.99 / -40.01 after the link drops.
   func testMaybeParked10MinWithCarLinkReturnsToSameTrip() throws {
     let result = try replay("synthetic_maybe_parked_10min_carlink_on.jsonl")
 
@@ -111,7 +111,7 @@ final class ScenarioTimeoutTraceTests: XCTestCase {
     XCTAssertEqual(parks.count, 1, "no park at the first stop")
     let park = try XCTUnwrap(parks.first)
     XCTAssertEqual(park.location.latitude, 40.99, accuracy: 1e-9)
-    XCTAssertEqual(park.location.longitude, 28.99, accuracy: 1e-9)
+    XCTAssertEqual(park.location.longitude, -40.01, accuracy: 1e-9)
     XCTAssertEqual(park.location.timestamp, at(1800))
     XCTAssertEqual(park.confidence, .high)
   }
@@ -166,7 +166,7 @@ final class ScenarioTimeoutTraceTests: XCTestCase {
 
     let park = try XCTUnwrap(parkings(result.effects).first)
     XCTAssertEqual(park.location.latitude, 41.0)
-    XCTAssertEqual(park.location.longitude, 29.0)
+    XCTAssertEqual(park.location.longitude, -40.0)
     XCTAssertEqual(park.location.accuracy, 6)
     XCTAssertEqual(park.confidence, .low)
   }

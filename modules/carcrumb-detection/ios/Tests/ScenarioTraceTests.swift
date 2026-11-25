@@ -62,7 +62,7 @@ final class ScenarioTraceTests: XCTestCase {
     XCTAssertEqual(result.transitions.map(\.to), ["MAYBE_DRIVING", "DRIVING", "MAYBE_PARKED", "PARKED"])
     XCTAssertTrue(result.transitions.filter { $0.to == "MAYBE_PARKED" || $0.to == "PARKED" }.allSatisfy { $0.at >= at(600) },
                   "red light / jam must not move towards parking")
-    let stop = LocationSample(latitude: 41.0, longitude: 29.0, accuracy: 5, speed: 0, timestamp: at(600))
+    let stop = LocationSample(latitude: 41.0, longitude: -40.0, accuracy: 5, speed: 0, timestamp: at(600))
     let point = ParkPoint(location: stop, confidence: .high, parkedAt: at(600))
     XCTAssertEqual(result.finalState, .parked(point))
     XCTAssertEqual(result.effects, [
@@ -85,7 +85,7 @@ final class ScenarioTraceTests: XCTestCase {
     let parks = parkings(result.effects)
     XCTAssertEqual(parks.count, 1)
     XCTAssertEqual(parks.first?.location.latitude, 41.0)
-    XCTAssertEqual(parks.first?.location.longitude, 29.0)
+    XCTAssertEqual(parks.first?.location.longitude, -40.0)
   }
 
   // MARK: Fuel stop, ~5 min, get out and back in → one trip
@@ -95,7 +95,7 @@ final class ScenarioTraceTests: XCTestCase {
 
     XCTAssertEqual(result.transitions.map(\.to),
                    ["MAYBE_DRIVING", "DRIVING", "MAYBE_PARKED", "DRIVING", "MAYBE_PARKED", "PARKED"])
-    let stop = LocationSample(latitude: 41.0, longitude: 29.0, accuracy: 5, speed: 0, timestamp: at(900))
+    let stop = LocationSample(latitude: 41.0, longitude: -40.0, accuracy: 5, speed: 0, timestamp: at(900))
     let point = ParkPoint(location: stop, confidence: .high, parkedAt: at(900))
     XCTAssertEqual(result.finalState, .parked(point))
     XCTAssertEqual(result.effects, [
@@ -173,7 +173,7 @@ final class ScenarioTraceTests: XCTestCase {
     let result = try replay("synthetic_garage_gps_degraded.jsonl")
     let park = parkings(result.effects).first
     XCTAssertEqual(park?.location.latitude, 41.0)
-    XCTAssertEqual(park?.location.longitude, 29.0)
+    XCTAssertEqual(park?.location.longitude, -40.0)
     XCTAssertEqual(park?.location.accuracy, 6)
     XCTAssertEqual(park?.confidence, .low, "indoor degradation must still flag low confidence")
   }
@@ -183,7 +183,7 @@ final class ScenarioTraceTests: XCTestCase {
 
     let park = try XCTUnwrap(parkings(result.effects).first)
     XCTAssertEqual(park.location.latitude, 41.0)
-    XCTAssertEqual(park.location.longitude, 29.0)
+    XCTAssertEqual(park.location.longitude, -40.0)
     XCTAssertEqual(park.location.timestamp, at(600))
   }
 
@@ -199,7 +199,7 @@ final class ScenarioTraceTests: XCTestCase {
   /// is high confidence (DECISIONS "Park noktası": order of events, not age).
   func testSittingInCar90sWithSilentGPSIsHighConfidence() throws {
     let result = try replay("synthetic_sit_in_car_90s.jsonl")
-    let stop = LocationSample(latitude: 41.0, longitude: 29.0, accuracy: 5, speed: 0, timestamp: at(600))
+    let stop = LocationSample(latitude: 41.0, longitude: -40.0, accuracy: 5, speed: 0, timestamp: at(600))
     let point = ParkPoint(location: stop, confidence: .high, parkedAt: at(600))
     XCTAssertEqual(result.finalState, .parked(point))
     XCTAssertEqual(result.transitions.map(\.to), ["MAYBE_DRIVING", "DRIVING", "MAYBE_PARKED", "PARKED"])
@@ -219,7 +219,7 @@ final class ScenarioTraceTests: XCTestCase {
     let result = try replay("synthetic_phone_left_in_car.jsonl")
     for park in parkings(result.effects) {
       XCTAssertEqual(park.location.latitude, 41.0)
-      XCTAssertEqual(park.location.longitude, 29.0)
+      XCTAssertEqual(park.location.longitude, -40.0)
     }
   }
 
@@ -233,7 +233,7 @@ final class ScenarioTraceTests: XCTestCase {
     XCTAssertEqual(tripEnds(result.effects), [.confirmed])
     let park = parkings(result.effects).first
     XCTAssertEqual(park?.location.latitude, 41.0)
-    XCTAssertEqual(park?.location.longitude, 29.0)
+    XCTAssertEqual(park?.location.longitude, -40.0)
     XCTAssertEqual(park?.confidence, .low)
     // Trip end = last movement (t+598, 2 m/s), not when the timeout noticed it.
     XCTAssertTrue(result.effects.contains(.endTrip(status: .confirmed, endedAt: at(598))))
@@ -312,7 +312,7 @@ final class ScenarioTraceTests: XCTestCase {
     XCTAssertEqual(before.finalState.name, "MAYBE_PARKED")
 
     let (restored, fx) = try restoreAfterKill(before.finalState, savedAt: at(620), relaunchAt: at(620 + 3600))
-    let stop = LocationSample(latitude: 41.0, longitude: 29.0, accuracy: 5, speed: 0, timestamp: at(600))
+    let stop = LocationSample(latitude: 41.0, longitude: -40.0, accuracy: 5, speed: 0, timestamp: at(600))
     let point = ParkPoint(location: stop, confidence: .low, parkedAt: at(600))
     XCTAssertEqual(restored, .parked(point))
     XCTAssertEqual(fx, [

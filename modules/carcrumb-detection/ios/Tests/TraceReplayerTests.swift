@@ -26,7 +26,7 @@ final class TraceReplayerTests: XCTestCase {
     guard case let .parked(point) = result.finalState else {
       return XCTFail("expected PARKED, got \(result.finalState.name)")
     }
-    let stop = LocationSample(latitude: 41.0, longitude: 29.0, accuracy: 5, speed: 0, timestamp: t0.addingTimeInterval(600))
+    let stop = LocationSample(latitude: 41.0, longitude: -40.0, accuracy: 5, speed: 0, timestamp: t0.addingTimeInterval(600))
     XCTAssertEqual(point.location, stop, "park point = buffered point at automotive → walking, not the walked-to point")
     XCTAssertEqual(point.confidence, .high)
     XCTAssertEqual(result.effects, [
@@ -42,7 +42,7 @@ final class TraceReplayerTests: XCTestCase {
   // MARK: Format
 
   func testRoundTripAllEventKinds() throws {
-    let sample = LocationSample(latitude: 41.0, longitude: 29.0, accuracy: 5, speed: 3.5, timestamp: t0)
+    let sample = LocationSample(latitude: 41.0, longitude: -40.0, accuracy: 5, speed: 3.5, timestamp: t0)
     let records = [
       TraceRecord(time: t0, event: .wake(.geofenceExit)),
       TraceRecord(time: t0.addingTimeInterval(1), event: .motion(.automotive)),
