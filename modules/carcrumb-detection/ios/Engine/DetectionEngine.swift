@@ -48,6 +48,11 @@ public final class DetectionEngine: @unchecked Sendable {
   /// End of the last closed trip; bounds the Core Motion history query of the next one.
   private var lastTripEndedAt: Date?
   private let store: DetectionStore
+  /// Route points of the open trip (RouteSampling.swift), written in batches. Begun only when
+  /// the trip row exists (`beginTrip` succeeded or a restored trip id): a trip begun while the
+  /// database was locked is saved without a route. Pending points (≤ 20 / ~60 s) are lost if
+  /// the process dies; the route then has a gap, the trip is unaffected.
+  private var route = RouteSampler()
   private let stateFile = StateFile()
   private let recorder = TraceRecorder()
   private var lastPersistAt: Date?
@@ -168,8 +173,38 @@ public final class DetectionEngine: @unchecked Sendable {
     let (next, effects) = reducer.reduce(state, event, now: now)
     state = next
     apply(effects, now: now)
+    recordRoute(event, now: now)
     didUpdateState(from: old, cause: event.typeName, now: now)
     return effects
+  }
+
+  /// Route recording, after the effects (a confirming fix has just begun the trip; a closing
+  /// event has already flushed and ended it). Only fixes whose reduction left the state in
+  /// DRIVING are offered: walking / MAYBE_PARKED fixes never become route points (park point
+  /// consistency, see `RouteSampler`). The reducer is not affected in any way.
+  private func recordRoute(_ event: DetectionEvent, now: Date) {
+    if case let .location(sample) = event, case .driving = state {
+      route.offer(sample, driving: true)
+    }
+    if route.shouldFlush(now: now) { flushRoute() }
+  }
+
+  /// Writes the pending route points in one transaction. A failed batch is dropped (no
+  /// buffering, see `DetectionStore.appendRoutePoints`). Logs counts only, never coordinates.
+  private func flushRoute() {
+    dispatchPrecondition(condition: .onQueue(queue))
+    guard let id = route.tripID else { return }
+    let points = route.takePending()
+    guard !points.isEmpty else { return }
+    do {
+      let result = try store.appendRoutePoints(points, tripID: id, maxPoints: route.config.maxPointsPerTrip)
+      if result.thinned {
+        route.didThin()
+        log.info("route thinned to \(result.storedCount, privacy: .public) points")
+      }
+    } catch {
+      log.error("store.appendRoutePoints failed (\(Self.storeErrorName(error), privacy: .public)); \(points.count, privacy: .public) points dropped")
+    }
   }
 
   /// `CarLinkSensor` reports changes only. After a wake or a GPS start the reducer may not
@@ -196,6 +231,9 @@ public final class DetectionEngine: @unchecked Sendable {
     state = restored
     lastTripEndedAt = persisted?.lastTripEndedAt
     tripID = restored.hasOpenTrip || effects.contains(where: \.isEndTrip) ? persisted?.tripID : nil
+    // The restored trip keeps recording into its existing route (seq continues in the store;
+    // the spacing restarts from the next fix). If `effects` close it, endTrip resets this.
+    if let tripID { route.begin(tripID: tripID) } else { route.reset() }
     // Trips left open by a process death between beginTrip and the state save. The restored
     // trip (`tripID`) is kept open here; if `effects` close it, their endTrip does that.
     // Fails harmlessly while the database is unavailable (retried at the next launch).
@@ -231,9 +269,11 @@ public final class DetectionEngine: @unchecked Sendable {
         do {
           let id = try store.beginTrip(startedAt: startedAt)
           tripID = id
+          route.begin(tripID: id)
           refineTripStart(tripID: id, reducerStart: startedAt, confirmedAt: now)
         } catch {
           tripID = nil
+          route.reset() // no trip row: this trip is saved without a route (saveClosedTrip)
           pendingTripStart = startedAt
           log.error("store.beginTrip failed (\(Self.storeErrorName(error), privacy: .public)); written at endTrip")
         }
@@ -249,6 +289,8 @@ public final class DetectionEngine: @unchecked Sendable {
             log.error("store.saveClosedTrip failed (\(Self.storeErrorName(error), privacy: .public))")
           }
         } else {
+          // Last route points first: endTrip computes the distance from the stored route.
+          flushRoute()
           do { try store.endTrip(tripID: tripID, status: status, endedAt: endedAt) } catch {
             log.error("store.endTrip failed (\(Self.storeErrorName(error), privacy: .public))")
           }
@@ -256,6 +298,7 @@ public final class DetectionEngine: @unchecked Sendable {
         }
         pendingTripStart = nil
         tripID = nil
+        route.reset()
         lastTripEndedAt = endedAt
       case let .saveParking(point):
         do {
@@ -393,6 +436,7 @@ public final class DetectionEngine: @unchecked Sendable {
       let old = self.state
       self.state = .idle
       self.tripID = nil
+      self.route.reset() // pending route points are dropped, never written after the deletion
       self.pendingTripStart = nil
       self.lastTripEndedAt = nil
       self.lastPersistAt = nil

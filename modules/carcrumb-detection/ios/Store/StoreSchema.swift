@@ -56,6 +56,29 @@ enum StoreSchema {
         """)
     }
 
+    migrator.registerMigration("v2_trip_points") { db in
+      // Trip route (RouteSampling.swift). Raw coordinates: never logged; deleted with the
+      // trip (CASCADE) and by "Geçmişi sil" (explicit DELETE + VACUUM + WAL TRUNCATE).
+      // Plain rowid (no AUTOINCREMENT): nothing outside this table refers to a point id.
+      // `seq` is the route order, assigned by the store per trip (MAX + 1), never by the
+      // clock: fix timestamps can jump with the device clock, insertion order cannot.
+      // Thinning leaves gaps in `seq`; only its order matters.
+      try db.execute(sql: """
+        CREATE TABLE trip_points (
+          id INTEGER PRIMARY KEY,
+          tripId INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+          seq INTEGER NOT NULL CHECK (seq >= 0),
+          timestamp DATETIME NOT NULL,
+          latitude DOUBLE NOT NULL CHECK (latitude BETWEEN -90 AND 90),
+          longitude DOUBLE NOT NULL CHECK (longitude BETWEEN -180 AND 180),
+          accuracy DOUBLE NOT NULL CHECK (accuracy >= 0)
+        );
+        -- Serves the route read (WHERE tripId = ? ORDER BY seq), MAX(seq) / COUNT per trip,
+        -- and the ON DELETE CASCADE lookup (leading column tripId), and makes the order unique.
+        CREATE UNIQUE INDEX trip_points_on_tripId_seq ON trip_points(tripId, seq);
+        """)
+    }
+
     return migrator
   }
 }
