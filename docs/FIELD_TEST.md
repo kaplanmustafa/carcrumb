@@ -41,8 +41,19 @@ Uygulama sırayla konum, hareket ve "Her Zaman" ister. Saha testi için üçün�
 Her testten sonra Teşhis ekranında uyarı (turuncu ikon) var mı bak; varsa ekran görüntüsü al.
 
 ## 5. Sensör kayıtlarını aktarma
-Ana ekran → Teşhis → "Sensör kayıtları (debug)" → ilgili günün dosyası → paylaş → AirDrop/Dosyalar ile **kendi bilgisayarına** al.
+Kayıtlar **gerçek konum ve rota** içerir (ev, iş, park yerlerin). Repoya ekleme, kimseyle paylaşma.
 
-- Kayıtlar **gerçek konum ve rota** içerir: repoya ekleme, kimseyle paylaşma, bulut klasörüne koyma.
-- `fixtures/traces/` altına yalnızca `synthetic_*` dosyaları girebilir; CI gerçek kayıtları (ad ve koordinat kutusu kontrolü) reddeder.
-- Analiz için kaydı bana ver; ilgili bölümü sentetik kutuya (41.0 / −40.0) taşınmış bir fixture'a çevirip kalıcı regresyon testi yaparım.
+**Telefondan Windows bilgisayara (bilinçli tek istisna: iCloud, hemen silinerek):**
+1. Ana ekran → Teşhis → "Sensör kayıtları (debug)" → ilgili günün dosyası → paylaş → **Dosyalar'a Kaydet → iCloud Drive** içinde `carcrumb-trace` adlı bir klasör.
+2. Bilgisayarda iCloud for Windows ya da icloud.com üzerinden dosyayı indir; proje klasörünün **dışına** koy (örn. `Belgeler\carcrumb-ham`).
+3. Hemen iCloud'dan sil, ardından **Son Silinenler**'den de sil (iPhone: Dosyalar → Göz At → Son Silinenler).
+
+**Analiz için bana (yapay zekâ asistanına) vermeden önce mutlaka anonimleştir.** Ham dosyayı sohbete vermek, gerçek konumları harici bir servise göndermek demektir. Betik yerelde çalışır, internete çıkmaz:
+```powershell
+node scripts/anonymize-trace.js "$HOME\Documents\carcrumb-ham\trace-2026-12-01.jsonl" "$HOME\Documents\carcrumb-ham\anon-2026-12-01.jsonl"
+```
+Betik koordinatları rastgele bir açıyla döndürüp sentetik noktaya (41.0 / −40.0, Atlantik ortası) taşır, tarihleri rastgele gün sayısı kadar kaydırır; mesafeler ve hızlar korunduğu için algılama aynı şekilde yeniden oynatılır. Bana yalnızca `anon-…` dosyasını ver. Mümkünse yalnızca sorunun yaşandığı kısa bölümü ver: rotanın şekli dönse de korunur.
+
+- Ham dosyayla işin bitince bilgisayarından da sil.
+- `fixtures/traces/` altına yalnızca `synthetic_*` dosyaları girebilir; CI hem adı hem koordinat kutusunu kontrol eder. Anonim kaydı fixture'a ben çevirip ekleyeceğim.
+- Test bitince uygulamada "Geçmişi sil" telefonun içindeki kayıtları da siler; debug kayıtları ayrıca 14 gün sonra kendiliğinden silinir.

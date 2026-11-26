@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Share } from 'react-native';
+import { AppState, Share } from 'react-native';
 
 import CarCrumbDetection, { type Diagnostics } from '../../../modules/carcrumb-detection';
 
@@ -27,12 +27,31 @@ export function useDiagnostics(): { diagnostics: Diagnostics | null; traces: str
   useEffect(() => {
     mounted.current = true;
     const sub = CarCrumbDetection.addListener('onStateChange', refresh);
-    const timer = setInterval(refresh, REFRESH_MS);
+    // Poll only while the app is in the foreground: with the page left open during a drive the
+    // JS timers would otherwise keep crossing to the engine queue every 5 s in the background.
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (timer === null) timer = setInterval(refresh, REFRESH_MS);
+    };
+    const stop = () => {
+      if (timer !== null) clearInterval(timer);
+      timer = null;
+    };
+    const appSub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') {
+        refresh();
+        start();
+      } else {
+        stop();
+      }
+    });
+    if (AppState.currentState !== 'background') start();
     refresh();
     return () => {
       mounted.current = false;
       sub.remove();
-      clearInterval(timer);
+      appSub.remove();
+      stop();
     };
   }, [refresh]);
 
@@ -46,5 +65,6 @@ export function useDiagnostics(): { diagnostics: Diagnostics | null; traces: str
 export async function shareTrace(name: string): Promise<void> {
   const path = CarCrumbDetection.getTracePath(name);
   if (!path) return;
-  await Share.share({ url: `file://${path}` }).catch(() => undefined);
+  // The path contains spaces ("Application Support"): encode it for a valid file URL.
+  await Share.share({ url: `file://${encodeURI(path)}` }).catch(() => undefined);
 }

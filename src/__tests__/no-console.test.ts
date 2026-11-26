@@ -8,7 +8,8 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 const ROOT = join(__dirname, '..', '..');
-const SKIP_DIRS = new Set(['node_modules', 'fixtures', 'docs', 'assets', 'ios', 'android', 'dist', 'build', 'coverage', '__tests__']);
+// scripts/: local CLI tools (not shipped); they print counts and errors, never coordinates.
+const SKIP_DIRS = new Set(['node_modules', 'scripts', 'fixtures', 'docs', 'assets', 'ios', 'android', 'dist', 'build', 'coverage', '__tests__']);
 const CONSOLE = /\bconsole\s*\.\s*[a-zA-Z]+\s*\(/;
 const COMMENT_LINE = /^\s*(\/\/|\/\*|\*)/;
 

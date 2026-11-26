@@ -86,6 +86,10 @@ function Root() {
   const pushedTrips = path
     .map(tripIdFromValue)
     .flatMap((id) => history.trips.filter((t) => t.id === id));
+  // A trip on the stack that no longer exists (history deleted, beyond the list limit) would
+  // leave an empty page: drop such values from the path.
+  const knownPath = path.filter((v) => tripIdFromValue(v) === null || history.trips.some((t) => t.id === tripIdFromValue(v)));
+  if (history.loaded && knownPath.length !== path.length) setPath(knownPath);
 
   return (
     <HomeScreen
