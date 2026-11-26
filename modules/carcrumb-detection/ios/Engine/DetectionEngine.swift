@@ -220,8 +220,13 @@ public final class DetectionEngine: @unchecked Sendable {
     dispatchPrecondition(condition: .onQueue(queue))
     guard force || RoutePurgeSchedule.isDue(lastRun: retentionSettings.lastPurgeAt, now: now) else { return }
     let retention = retentionSettings.retention
+    // Clock-forward guard: a device clock set months ahead must not wipe recent routes for
+    // good. The limit is measured from the earlier of `now` and the end of the last trip, so
+    // a jump forward deletes nothing new; the trade-off is that the newest trip's route is
+    // kept until a newer trip ends (docs/DECISIONS.md "Rota saklama süresi").
+    let reference = lastTripEndedAt.map { min(now, $0) } ?? now
     do {
-      if let cutoff = retention.cutoff(now: now) {
+      if let cutoff = retention.cutoff(now: reference) {
         let deleted = try store.purgeExpiredRoutes(olderThan: cutoff)
         if deleted > 0 { log.info("route retention (\(retention.rawValue, privacy: .public)): \(deleted, privacy: .public) points deleted") }
       }

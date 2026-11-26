@@ -55,6 +55,8 @@ export function SettingsPage({
             ? 'Tüm yolculuklar, rotalar ve park yerleri kalıcı olarak silinir. Geri alınamaz.'
             : deleteStatusCopy[deleteStatus]
         }>
+        {/* Hidden while deleting: a second tap would start a redundant deletion. */}
+        {deleteStatus === 'deleting' ? null : (
         <DestructiveButton
           label="Geçmişi sil"
           confirmTitle="Tüm geçmiş silinsin mi?"
@@ -62,6 +64,7 @@ export function SettingsPage({
           confirmLabel="Geçmişi sil"
           onConfirm={onDeleteHistory}
         />
+        )}
       </Section>
     </Destination>
   );

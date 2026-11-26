@@ -50,4 +50,9 @@ describe('SettingsPage', () => {
     expect(footer(render({ deleteStatus: 'done' }))).toBe('Geçmiş silindi.');
     expect(footer(render({ deleteStatus: 'failed' }))).toMatch(/kilidi açıkken/);
   });
+
+  it('hides the delete button while a deletion is running (no duplicate deletes)', () => {
+    expect(all(render({ deleteStatus: 'deleting' }).els, 'DestructiveButton')).toHaveLength(0);
+    expect(all(render({ deleteStatus: 'failed' }).els, 'DestructiveButton')).toHaveLength(1);
+  });
 });
