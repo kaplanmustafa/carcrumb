@@ -7,6 +7,7 @@
  */
 import {
   Button,
+  ConfirmationDialog,
   ContentUnavailableView,
   Form,
   Host,
@@ -16,6 +17,7 @@ import {
   NavigationDestination,
   NavigationLink,
   NavigationStack,
+  Picker,
   RNHostView,
   Section as SwiftSection,
   Text,
@@ -28,10 +30,12 @@ import {
   foregroundStyle,
   monospacedDigit,
   navigationTitle,
+  pickerStyle,
+  tag,
   tint,
   type ViewModifier,
 } from '@expo/ui/swift-ui/modifiers';
-import type { ReactElement, ReactNode } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { color, icon, radius, size, space, typography, type IconName, type StatusTone, type TypeRole } from './tokens';
@@ -283,6 +287,70 @@ export function SecondaryButton({ label, iconName, onPress }: { label: string; i
       onPress={onPress}
       modifiers={[buttonStyle('bordered'), controlSize('large'), tint(color.accent)]}
     />
+  );
+}
+
+/** One-of-many setting shown as a menu row (e.g. route retention: 3 ay / 12 ay / Süresiz). */
+export function ChoiceRow<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: readonly { value: T; label: string }[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <Picker<string> label={label} selection={value} onSelectionChange={(v) => onChange(v as T)} modifiers={[pickerStyle('menu')]}>
+      {options.map((o) => (
+        <Text key={o.value} modifiers={[tag(o.value)]}>
+          {o.label}
+        </Text>
+      ))}
+    </Picker>
+  );
+}
+
+/**
+ * A destructive action that always asks first (system confirmation dialog with a red
+ * confirm button and Cancel). Used for irreversible actions such as deleting history.
+ */
+export function DestructiveButton({
+  label,
+  confirmTitle,
+  confirmMessage,
+  confirmLabel,
+  onConfirm,
+}: {
+  label: string;
+  confirmTitle: string;
+  confirmMessage: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+}) {
+  const [presented, setPresented] = useState(false);
+  return (
+    <ConfirmationDialog title={confirmTitle} isPresented={presented} onIsPresentedChange={setPresented} titleVisibility="visible">
+      <ConfirmationDialog.Trigger>
+        <Button label={label} role="destructive" onPress={() => setPresented(true)} />
+      </ConfirmationDialog.Trigger>
+      <ConfirmationDialog.Actions>
+        <Button
+          label={confirmLabel}
+          role="destructive"
+          onPress={() => {
+            setPresented(false);
+            onConfirm();
+          }}
+        />
+        <Button label="Vazgeç" role="cancel" onPress={() => setPresented(false)} />
+      </ConfirmationDialog.Actions>
+      <ConfirmationDialog.Message>
+        <Text>{confirmMessage}</Text>
+      </ConfirmationDialog.Message>
+    </ConfirmationDialog>
   );
 }
 
