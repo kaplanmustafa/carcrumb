@@ -3,13 +3,9 @@
 # design preview screens can be selected with a launch argument.
 name: Screenshots
 
+# Manual only (Actions → Screenshots → Run workflow): run when someone wants to see the UI.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'App.tsx'
-      - 'src/**'
-      - '.github/workflows/screenshots.yml'
 
 permissions:
   contents: read
