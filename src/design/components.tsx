@@ -123,6 +123,29 @@ export function StatusLabel({ title, iconName, tone }: { title: string; iconName
   );
 }
 
+/**
+ * A moment shown relative to now ("12 dk", "2 sa") and kept current by SwiftUI as time
+ * passes. Localised by the system (the app's development region is Turkish).
+ */
+export function RelativeTime({ date, tone = 'secondary' }: { date: Date; tone?: TextTone }) {
+  return (
+    <Text
+      date={date}
+      dateStyle="relative"
+      modifiers={[font({ textStyle: typography.body.textStyle }), foregroundStyle(color.text[tone]), monospacedDigit()]}
+    />
+  );
+}
+
+/** A label on the left, a relative time on the right ("Park edildi · 12 dk"). */
+export function TimeRow({ label, date }: { label: string; date: Date }) {
+  return (
+    <LabeledContent label={label}>
+      <RelativeTime date={date} />
+    </LabeledContent>
+  );
+}
+
 /** A label on the left, a value on the right (Settings-style row). */
 export function InfoRow({ label, value }: { label: string; value: string }) {
   return (
