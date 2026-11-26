@@ -38,6 +38,8 @@ export type HomeNavigation = {
   historyValue: string;
   /** Field-test diagnostics page; omitted in previews. */
   diagnosticsValue?: string;
+  /** Settings page; omitted in previews. */
+  settingsValue?: string;
 };
 
 export function HomeScreen({
@@ -120,6 +122,11 @@ export function HomeScreen({
           {navigation.diagnosticsValue ? (
             <NavRow value={navigation.diagnosticsValue}>
               <NavLabel title="Teşhis" iconName="diagnostics" />
+            </NavRow>
+          ) : null}
+          {navigation.settingsValue ? (
+            <NavRow value={navigation.settingsValue}>
+              <NavLabel title="Ayarlar" iconName="settings" />
             </NavRow>
           ) : null}
         </Section>

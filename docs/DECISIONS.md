@@ -78,9 +78,9 @@ Trafikte duran araç "Olası park"tan "Sürüş"e geri döner; park ancak yürü
 
 **Geçmişi silme kontrol listesi:** SQLite satırları (rota noktaları `trip_points` dahil) + `VACUUM` + WAL checkpoint, motor durum dosyası (`state.json`) silinip motor IDLE'a alınır, CLMonitor park koşulu kaldırılır, debug kayıt dizini (`traces/`) silinir.
 
-**Rota kaydı (26 Kasım 2026):** Yalnızca sürüş (DRIVING) sırasında, araç hızındaki (> 2,5 m/s) ve doğruluğu ≤ 30 m olan noktalar; son noktadan ≥ 25 m ya da ≥ 15 sn. Yolculuk başına en fazla 5000 nokta (aşılınca eşit seyreltilir). Mesafe, yolculuk bitince bu noktaların haversine toplamıdır. Kilitli cihazda (yeniden başlatma sonrası, kilit açılmadan) başlayan yolculuk rotasız kaydedilir. Rota yalnızca cihazda tutulur ve çizilir.
+**Rota kaydı (26 Kasım 2026):** Yalnızca sürüş (DRIVING) sırasında, araç hızındaki (> 2,5 m/s) ve doğruluğu ≤ 30 m olan noktalar; son noktadan ≥ 25 m ya da ≥ 15 sn. Yolculuk başına en fazla 5000 nokta (aşılınca eşit seyreltilir). Mesafe, noktalar yazıldıkça biriktirilen haversine toplamıdır (seyreltmeden önce; sürerken de güncel, bitişte kesinleşir). Saat 60 sn'den fazla geri alınırsa kayıt yeni saatle devam eder. Kilitli cihazda (yeniden başlatma sonrası, kilit açılmadan) başlayan yolculuk rotasız kaydedilir. Rota yalnızca cihazda tutulur ve çizilir.
 
-**Rota saklama süresi (26 Kasım 2026):** Ayarlanabilir: 3 ay / 12 ay (varsayılan) / süresiz. Süresi dolan yolculukların rota noktaları silinir (+ WAL kırpma); yolculuğun kendisi (tarih, süre, mesafe, durum) kalır. Gerekçe: süresiz rota geçmişi ev, iş ve tüm eski park yerlerini ortaya çıkarır; "son 3 park" kuralının gizlilik amacını korur.
+**Rota saklama süresi (26 Kasım 2026):** Ayarlanabilir: 3 ay / 12 ay (varsayılan) / süresiz. Süresi dolan yolculukların rota noktaları silinir (+ WAL kırpma); yolculuğun kendisi (tarih, süre, mesafe, durum) kalır. Gerekçe: süresiz rota geçmişi ev, iş ve tüm eski park yerlerini ortaya çıkarır; "son 3 park" kuralının gizlilik amacını korur. Süre, "şimdi" ile son yolculuğun bitişinden erken olana göre hesaplanır: cihaz saati ileri alınırsa yeni rotalar geri dönüşsüz silinmez; bunun bedeli, en son yolculuğun rotasının bir sonraki yolculuğa kadar kalmasıdır.
 
 ## Teknik kararlar
 

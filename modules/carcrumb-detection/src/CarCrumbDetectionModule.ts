@@ -8,6 +8,7 @@ import type {
   MotionAuthorization,
   ParkingRecord,
   RoutePoint,
+  RouteRetention,
   TripRecord,
 } from './CarCrumbDetection.types';
 
@@ -51,6 +52,15 @@ declare class CarCrumbDetectionModule extends NativeModule<CarCrumbDetectionModu
    * Rejects with code ERR_DELETE_HISTORY on failure.
    */
   deleteAllHistory(): Promise<void>;
+  /** Route retention setting; 'twelveMonths' until the user changes it. */
+  getRouteRetention(): RouteRetention;
+  /**
+   * Saves the setting and deletes the routes of trips that ended before the new limit before
+   * resolving (the trips themselves, with distance, stay). Rejects with ERR_INVALID_ARGUMENT
+   * for an unknown value. If the database is still locked (not unlocked since restart) it
+   * resolves anyway; the deletion then runs at the next engine start.
+   */
+  setRouteRetention(value: RouteRetention): Promise<void>;
   /** Debug builds: trace file names, newest first. Release: always []. */
   listTraces(): string[];
   /** Debug builds: absolute path of a trace from listTraces(). Release: always null. */

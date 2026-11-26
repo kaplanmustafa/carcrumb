@@ -6,7 +6,7 @@ import { sortTripsForHistory } from './format';
 const HISTORY_LIMIT = 200;
 
 /** Trip history, newest start first. Refreshes on detection state changes (a trip ends). */
-export function useTrips(): { trips: TripRecord[]; loaded: boolean } {
+export function useTrips(): { trips: TripRecord[]; loaded: boolean; refresh: () => Promise<void> } {
   const [state, setState] = useState<{ trips: TripRecord[]; loaded: boolean }>({ trips: [], loaded: false });
   const latest = useRef(0);
   const mounted = useRef(true);
@@ -28,7 +28,7 @@ export function useTrips(): { trips: TripRecord[]; loaded: boolean } {
     };
   }, [refresh]);
 
-  return state;
+  return { ...state, refresh };
 }
 
 export type RouteState = { status: 'loading' } | { status: 'ready'; points: { latitude: number; longitude: number }[] } | { status: 'error' };

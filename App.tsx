@@ -7,6 +7,7 @@ import { HomeScreen } from './src/features/home/HomeScreen';
 import { DIAGNOSTICS, DiagnosticsPage } from './src/features/diagnostics/DiagnosticsPage';
 import { shareTrace, useDiagnostics } from './src/features/diagnostics/useDiagnostics';
 import { useHomeData } from './src/features/home/useHomeData';
+import { SETTINGS, SettingsPage, type DeleteStatus, type RouteRetention } from './src/features/settings/SettingsPage';
 import { walkingDirectionsUrl } from './src/features/parking/directions';
 import { markAsked } from './src/features/permissions/asked';
 import { nextOnboardingStep } from './src/features/permissions/flow';
@@ -103,11 +104,20 @@ function Root() {
         onPathChange: setPath,
         historyValue: HISTORY,
         diagnosticsValue: DIAGNOSTICS,
+        settingsValue: SETTINGS,
         destinations: (
           <>
             <HistoryPage trips={history.trips} loaded={history.loaded} />
             {/* One destination per trip on the stack (built on demand, see NavigationDestination). */}
             {path.includes(DIAGNOSTICS) ? <PushedDiagnostics /> : null}
+            {path.includes(SETTINGS) ? (
+              <PushedSettings
+                onHistoryDeleted={() => {
+                  void refresh();
+                  void history.refresh();
+                }}
+              />
+            ) : null}
             {pushedTrips.map((trip) => (
               <PushedTrip key={trip.id} trip={trip} />
             ))}
@@ -132,6 +142,36 @@ function PushedDiagnostics() {
       traces={traces}
       onRefresh={refresh}
       onShareTrace={(name) => void shareTrace(name)}
+    />
+  );
+}
+
+/** Mounted only while the settings page is pushed. */
+function PushedSettings({ onHistoryDeleted }: { onHistoryDeleted: () => void }) {
+  const [retention, setRetention] = useState<RouteRetention | null>(() => CarCrumbDetection.getRouteRetention());
+  const [deleteStatus, setDeleteStatus] = useState<DeleteStatus>('idle');
+  return (
+    <SettingsPage
+      retention={retention}
+      onRetentionChange={(value) => {
+        setRetention(value);
+        // Resolves after the purge; on failure show what the engine actually kept.
+        void CarCrumbDetection.setRouteRetention(value).catch(() => setRetention(CarCrumbDetection.getRouteRetention()));
+      }}
+      deleteStatus={deleteStatus}
+      onDeleteHistory={() => {
+        setDeleteStatus('deleting');
+        CarCrumbDetection.deleteAllHistory().then(
+          () => {
+            setDeleteStatus('done');
+            onHistoryDeleted();
+          },
+          () => {
+            setDeleteStatus('failed');
+            onHistoryDeleted();
+          },
+        );
+      }}
     />
   );
 }

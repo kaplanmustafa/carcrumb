@@ -53,6 +53,8 @@ public final class DetectionEngine: @unchecked Sendable {
   /// database was locked is saved without a route. Pending points (≤ 20 / ~60 s) are lost if
   /// the process dies; the route then has a gap, the trip is unaffected.
   private var route = RouteSampler()
+  /// Route retention setting + last purge time (UserDefaults; readable without JS).
+  private let retentionSettings = RouteRetentionSettings()
   private let stateFile = StateFile()
   private let recorder = TraceRecorder()
   private var lastPersistAt: Date?
@@ -159,6 +161,7 @@ public final class DetectionEngine: @unchecked Sendable {
       break
     }
     let effects = reduceAndApply(event, now: now)
+    if case .tick = event { purgeExpiredRoutes(now: now, force: false) }
     // After reducing: only a GPS start (IDLE/PARKED → MAYBE_DRIVING creates the state with
     // carLink=false, so the level is unknown until it exists).
     if effects.contains(.startGPS) {
@@ -199,11 +202,37 @@ public final class DetectionEngine: @unchecked Sendable {
     do {
       let result = try store.appendRoutePoints(points, tripID: id, maxPoints: route.config.maxPointsPerTrip)
       if result.thinned {
-        route.didThin()
-        log.info("route thinned to \(result.storedCount, privacy: .public) points")
+        route.didThin(times: result.thinCount)
+        log.info("route thinned \(result.thinCount, privacy: .public)x to \(result.storedCount, privacy: .public) points")
       }
     } catch {
       log.error("store.appendRoutePoints failed (\(Self.storeErrorName(error), privacy: .public)); \(points.count, privacy: .public) points dropped")
+    }
+  }
+
+  /// Route retention (docs/DECISIONS.md "Rota saklama süresi"): deletes route points of trips
+  /// that ended before the limit of the current setting. Runs on the engine queue: at start
+  /// (after restore) and on a setting change with `force`, otherwise from the tick path at
+  /// most once a day (`RoutePurgeSchedule`). "forever" deletes nothing. The last run is only
+  /// recorded on success, so a locked database (before the first unlock) is retried at the
+  /// next tick / start. Logs counts only.
+  private func purgeExpiredRoutes(now: Date, force: Bool) {
+    dispatchPrecondition(condition: .onQueue(queue))
+    guard force || RoutePurgeSchedule.isDue(lastRun: retentionSettings.lastPurgeAt, now: now) else { return }
+    let retention = retentionSettings.retention
+    // Clock-forward guard: a device clock set months ahead must not wipe recent routes for
+    // good. The limit is measured from the earlier of `now` and the end of the last trip, so
+    // a jump forward deletes nothing new; the trade-off is that the newest trip's route is
+    // kept until a newer trip ends (docs/DECISIONS.md "Rota saklama süresi").
+    let reference = lastTripEndedAt.map { min(now, $0) } ?? now
+    do {
+      if let cutoff = retention.cutoff(now: reference) {
+        let deleted = try store.purgeExpiredRoutes(olderThan: cutoff)
+        if deleted > 0 { log.info("route retention (\(retention.rawValue, privacy: .public)): \(deleted, privacy: .public) points deleted") }
+      }
+      retentionSettings.lastPurgeAt = now
+    } catch {
+      log.error("store.purgeExpiredRoutes failed (\(Self.storeErrorName(error), privacy: .public))")
     }
   }
 
@@ -232,14 +261,22 @@ public final class DetectionEngine: @unchecked Sendable {
     lastTripEndedAt = persisted?.lastTripEndedAt
     tripID = restored.hasOpenTrip || effects.contains(where: \.isEndTrip) ? persisted?.tripID : nil
     // The restored trip keeps recording into its existing route (seq continues in the store;
-    // the spacing restarts from the next fix). If `effects` close it, endTrip resets this.
-    if let tripID { route.begin(tripID: tripID) } else { route.reset() }
+    // the spacing restarts from the next fix, at the density the route was thinned to). If
+    // `effects` close it, endTrip resets this. Database unavailable: density restarts at 1.
+    if let tripID {
+      let thinCount = (try? store.routeThinCount(tripID: tripID)) ?? 0
+      route.begin(tripID: tripID, thinCount: thinCount)
+    } else {
+      route.reset()
+    }
     // Trips left open by a process death between beginTrip and the state save. The restored
     // trip (`tripID`) is kept open here; if `effects` close it, their endTrip does that.
     // Fails harmlessly while the database is unavailable (retried at the next launch).
     do { try store.abandonOpenTrips(except: tripID) } catch {
       log.error("store.abandonOpenTrips failed (\(Self.storeErrorName(error), privacy: .public))")
     }
+    // Route retention at every engine start (also a background relaunch without JS).
+    purgeExpiredRoutes(now: now, force: true)
     log.info("restored state \(restored.name, privacy: .public) (persisted: \(persisted?.state.name ?? "none", privacy: .public))")
     apply(effects, now: now)
     didUpdateState(from: .idle, cause: "restore", now: now, forceNotify: true)
@@ -409,6 +446,23 @@ public final class DetectionEngine: @unchecked Sendable {
   ) {
     queue.async {
       completion(Result { try body(self.store) })
+    }
+  }
+
+  /// Current route retention setting (UserDefaults is thread-safe; no queue hop needed).
+  public var routeRetention: RouteRetention {
+    retentionSettings.retention
+  }
+
+  /// Stores the setting and purges right away with the new limit, on the engine queue
+  /// (ordered with route writes). `completion` runs on that queue after the purge attempt; a
+  /// failed purge (database unavailable) is retried at the next start / daily run.
+  public func setRouteRetention(_ value: RouteRetention, completion: @escaping @Sendable () -> Void) {
+    queue.async {
+      self.retentionSettings.retention = value
+      self.log.info("route retention set to \(value.rawValue, privacy: .public)")
+      self.purgeExpiredRoutes(now: Date(), force: true)
+      completion()
     }
   }
 
