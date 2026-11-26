@@ -13,9 +13,13 @@ import {
   Image,
   Label,
   LabeledContent,
+  NavigationDestination,
+  NavigationLink,
   NavigationStack,
+  RNHostView,
   Section as SwiftSection,
   Text,
+  VStack,
 } from '@expo/ui/swift-ui';
 import {
   buttonStyle,
@@ -27,21 +31,104 @@ import {
   tint,
   type ViewModifier,
 } from '@expo/ui/swift-ui/modifiers';
-import type { ReactNode } from 'react';
-import { StyleSheet } from 'react-native';
+import type { ReactElement, ReactNode } from 'react';
+import { StyleSheet, View } from 'react-native';
 
-import { color, icon, typography, type IconName, type StatusTone, type TypeRole } from './tokens';
+import { color, icon, radius, size, space, typography, type IconName, type StatusTone, type TypeRole } from './tokens';
 
 type TextTone = keyof typeof color.text;
 
-/** Root of every screen: SwiftUI host, navigation bar with a large title, grouped form. */
-export function Screen({ title, children }: { title: string; children: ReactNode }) {
+/** A grouped form with a large navigation title: the body of a screen or a pushed page. */
+function Page({ title, children }: { title: string; children: ReactNode }) {
+  return <Form modifiers={[navigationTitle(title), tint(color.accent)]}>{children}</Form>;
+}
+
+/**
+ * Root of every screen: SwiftUI host, navigation bar with a large title, grouped form.
+ * For drill-down, pass `destinations` (<Destination> elements) and a controlled `path`;
+ * <NavRow value="…"> anywhere inside pushes the destination with that value.
+ */
+export function Screen({
+  title,
+  children,
+  destinations,
+  path,
+  onPathChange,
+}: {
+  title: string;
+  children: ReactNode;
+  destinations?: ReactNode;
+  path?: string[];
+  onPathChange?: (path: string[]) => void;
+}) {
   return (
     <Host style={styles.fill}>
-      <NavigationStack>
-        <Form modifiers={[navigationTitle(title), tint(color.accent)]}>{children}</Form>
+      <NavigationStack path={path} onPathChange={onPathChange}>
+        <Page title={title}>{children}</Page>
+        {destinations}
       </NavigationStack>
     </Host>
+  );
+}
+
+/** A page pushed onto a <Screen>'s navigation stack when a <NavRow> with the same value is tapped. */
+export function Destination({ value, title, children }: { value: string; title: string; children: ReactNode }) {
+  return (
+    <NavigationDestination value={value}>
+      <Page title={title}>{children}</Page>
+    </NavigationDestination>
+  );
+}
+
+/** A row with a disclosure chevron that pushes the <Destination> with the same value. */
+export function NavRow({ value, children }: { value: string; children: ReactNode }) {
+  return <NavigationLink value={value}>{children}</NavigationLink>;
+}
+
+/** Icon + title row for navigation lists (e.g. "Yolculuk geçmişi"). Primary text colour, accent icon. */
+export function NavLabel({ title, iconName }: { title: string; iconName: IconName }) {
+  return (
+    <Label
+      title={title}
+      icon={<Image systemName={icon[iconName]} modifiers={[foregroundStyle(color.accent)]} />}
+      modifiers={[foregroundStyle(color.text.primary)]}
+    />
+  );
+}
+
+/**
+ * Two-line list row: a title and a secondary detail line (e.g. a trip: "26 Kas 14:32" /
+ * "23 dk · 12,4 km"). Optional trailing note in the secondary colour (e.g. "Belirsiz").
+ */
+export function DetailRow({ title, detail, note }: { title: string; detail: string; note?: string }) {
+  return (
+    <LabeledContent
+      label={
+        <VStack alignment="leading" spacing={space.xxs}>
+          <Txt>{title}</Txt>
+          <Txt role="caption" tone="secondary">
+            {detail}
+          </Txt>
+        </VStack>
+      }>
+      {note ? (
+        <Txt role="caption" tone="secondary">
+          {note}
+        </Txt>
+      ) : null}
+    </LabeledContent>
+  );
+}
+
+/**
+ * Embeds a React Native view (e.g. the map) in a form row at a token height. The row takes
+ * its height from the hosted view (`matchContents.vertical`) and its width from the form.
+ */
+export function EmbeddedView({ height, children }: { height: keyof typeof size; children: ReactElement }) {
+  return (
+    <RNHostView matchContents={{ vertical: true }}>
+      <View style={[styles.embedded, { height: size[height] }]}>{children}</View>
+    </RNHostView>
   );
 }
 
@@ -196,4 +283,6 @@ export function EmptyState({
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
+  // Hosted RN views keep the form row's corner shape.
+  embedded: { borderRadius: radius.m, overflow: 'hidden' },
 });

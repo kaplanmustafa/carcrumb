@@ -15,6 +15,7 @@ import { statePresentation } from '../detection/presentation';
 import { HomeScreen } from '../home/HomeScreen';
 import type { HomeData } from '../home/useHomeData';
 import { OnboardingScreen } from '../permissions/OnboardingScreen';
+import { HISTORY, HistoryPage, TripPage, tripValue } from '../trips/TripScreens';
 
 export type PreviewScreen =
   | 'states'
@@ -24,7 +25,9 @@ export type PreviewScreen =
   | 'always'
   | 'home-parked'
   | 'home-low'
-  | 'home-off';
+  | 'home-off'
+  | 'history'
+  | 'trip';
 
 const SCREENS: readonly PreviewScreen[] = [
   'states',
@@ -35,6 +38,8 @@ const SCREENS: readonly PreviewScreen[] = [
   'home-parked',
   'home-low',
   'home-off',
+  'history',
+  'trip',
 ];
 
 /** The preview screen requested for this launch, or null for the real app. */
@@ -116,10 +121,46 @@ function homeData(kind: HomePreview): HomeData {
 
 const previewActions = { onDirections: noop, onOpenSettings: noop };
 
+const previewTrips: TripRecord[] = [
+  { id: 5, startedAt: minutesAgo(40), endedAt: minutesAgo(12), status: 'confirmed', distanceMeters: 12_400 },
+  { id: 4, startedAt: minutesAgo(26 * 60), endedAt: minutesAgo(26 * 60 - 18), status: 'uncertain', distanceMeters: 6_800 },
+  { id: 3, startedAt: minutesAgo(50 * 60), endedAt: minutesAgo(50 * 60 - 65), status: 'confirmed', distanceMeters: 48_300 },
+  { id: 2, startedAt: minutesAgo(74 * 60), endedAt: minutesAgo(74 * 60 - 9), status: 'confirmed', distanceMeters: 2_100 },
+];
+
+/** A synthetic loop inside the synthetic box (41.0 / -40.0, open Atlantic). */
+const previewRoute = Array.from({ length: 40 }, (_, i) => {
+  const a = (i / 39) * Math.PI * 1.5;
+  return { latitude: 41.0 + 0.02 * Math.sin(a), longitude: -40.0 + 0.03 * (1 - Math.cos(a)) };
+});
+
+function HistoryPreview({ withTrip }: { withTrip: boolean }) {
+  const path = withTrip ? [HISTORY, tripValue(5)] : [HISTORY];
+  return (
+    <HomeScreen
+      data={homeData('home-parked')}
+      actions={previewActions}
+      navigation={{
+        path,
+        onPathChange: noop,
+        historyValue: HISTORY,
+        destinations: (
+          <>
+            <HistoryPage trips={previewTrips} loaded />
+            {withTrip ? <TripPage trip={previewTrips[0]} route={{ status: 'ready', points: previewRoute }} /> : null}
+          </>
+        ),
+      }}
+    />
+  );
+}
+
 export function DesignPreview({ screen }: { screen: PreviewScreen }) {
   if (screen === 'permission') return <OnboardingScreen step="location" onContinue={noop} />;
   if (screen === 'motion') return <OnboardingScreen step="motion" onContinue={noop} />;
   if (screen === 'always') return <OnboardingScreen step="always" onContinue={noop} />;
+  if (screen === 'history') return <HistoryPreview withTrip={false} />;
+  if (screen === 'trip') return <HistoryPreview withTrip />;
   if (screen === 'home-parked' || screen === 'home-low' || screen === 'home-off') {
     return <HomeScreen data={homeData(screen)} actions={previewActions} />;
   }
