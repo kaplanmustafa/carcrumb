@@ -4,7 +4,7 @@ iPhone'da araç yolculuklarını ve park konumunu ek donanım olmadan otomatik a
 Tüm ürün ve mimari kararları: `docs/DECISIONS.md`. Yeni bir işe başlamadan önce ilgili bölümünü oku; bir kararı değiştirmen gerekiyorsa önce kullanıcıya sor, sonra dosyayı güncelle.
 
 ## Durum
-İskelet kuruldu (Expo SDK 58, iOS 18 hedefi). Saf durum makinesi `modules/carcrumb-detection/ios/Detection/` altında; sensörler `ios/Sensors/`, motor `ios/Engine/` (seri kuyruk) altında bağlı, debug sensör kayıt modu var. Kalıcı depo GRDB ile `ios/Store/` altında (WAL, tek yazıcı Swift). Arayüz tasarım sistemiyle tek ekran. Sahada henüz test edilmedi. Önceki DriveMate kodu kullanılmıyor.
+İskelet kuruldu (Expo SDK 58, iOS 18 hedefi). Saf durum makinesi `modules/carcrumb-detection/ios/Detection/` altında; sensörler `ios/Sensors/`, motor `ios/Engine/` (seri kuyruk) altında bağlı, debug sensör kayıt modu var. Kalıcı depo GRDB ile `ios/Store/` altında (WAL, tek yazıcı Swift). Arayüz: izin akışı, "Arabam nerede", yolculuk geçmişi (Apple MapKit) ve teşhis ekranı. Sahada henüz test edilmedi (rehber: `docs/FIELD_TEST.md`). Önceki DriveMate kodu kullanılmıyor.
 
 ## Yapı
 - `App.tsx` — arayüz (şimdilik tek ekran)

@@ -36,6 +36,8 @@ export type HomeNavigation = {
   onPathChange: (path: string[]) => void;
   destinations: ReactNode;
   historyValue: string;
+  /** Field-test diagnostics page; omitted in previews. */
+  diagnosticsValue?: string;
 };
 
 export function HomeScreen({
@@ -115,6 +117,11 @@ export function HomeScreen({
           <NavRow value={navigation.historyValue}>
             <NavLabel title="Yolculuklar" iconName="history" />
           </NavRow>
+          {navigation.diagnosticsValue ? (
+            <NavRow value={navigation.diagnosticsValue}>
+              <NavLabel title="Teşhis" iconName="diagnostics" />
+            </NavRow>
+          ) : null}
         </Section>
       ) : null}
 

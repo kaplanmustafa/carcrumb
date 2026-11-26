@@ -104,6 +104,8 @@ export const icon = {
   directions: 'arrow.triangle.turn.up.right.diamond.fill',
   warning: 'exclamationmark.triangle.fill',
   settings: 'gearshape.fill',
+  share: 'square.and.arrow.up',
+  refresh: 'arrow.clockwise',
 } as const satisfies Record<string, SFSymbol>;
 
 export type IconName = keyof typeof icon;

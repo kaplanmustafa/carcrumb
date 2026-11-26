@@ -233,6 +233,26 @@ export function TimeRow({ label, date }: { label: string; date: Date }) {
   );
 }
 
+/**
+ * Settings-style row whose value can be flagged: a flagged value gets a warning icon in the
+ * pending colour, so the problem is visible without relying on colour alone.
+ */
+export function FlagRow({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <LabeledContent label={label}>
+      {warn ? (
+        <Label
+          title={value}
+          icon={<Image systemName={icon.warning} modifiers={[foregroundStyle(color.status.pending)]} />}
+          modifiers={[foregroundStyle(color.text.secondary)]}
+        />
+      ) : (
+        <Txt tone="secondary">{value}</Txt>
+      )}
+    </LabeledContent>
+  );
+}
+
 /** A label on the left, a value on the right (Settings-style row). */
 export function InfoRow({ label, value }: { label: string; value: string }) {
   return (
