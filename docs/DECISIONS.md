@@ -183,5 +183,5 @@ Açık sorular:
 - [ ] Pro fiyatı ve Türkiye yerelleştirmesi
 - [ ] Durma eşiğinin varsayılan değeri (saha verisiyle belirlenecek)
 - [ ] Park geofence yarıçapı (öneri ~150 m, sahada doğrulanacak)
-- [ ] Harita: Apple MapKit mi, başka bir çözüm mü
+- [x] Harita: Apple MapKit, `expo-maps` ile (26 Kasım 2026). Ücretsiz, API anahtarı yok; rota çizgisi cihazda çizilir, CarCrumb rotayı hiçbir sunucuya göndermez (karolar Apple'dan gelir). Google Maps SDK gizlilik etiketini değiştireceği için seçilmedi.
 - [ ] Test için kullanılacak iPhone ve iOS sürümleri
