@@ -3,11 +3,12 @@
  * history (DECISIONS "Geçmişi silme kontrol listesi"; native `deleteAllHistory`).
  * Presentational: values and actions come in as props.
  */
+import type { RouteRetention } from '../../../modules/carcrumb-detection';
 import { ChoiceRow, Destination, DestructiveButton, Section, Txt } from '../../design/components';
 
 export const SETTINGS = 'settings';
 
-export type RouteRetention = 'threeMonths' | 'twelveMonths' | 'forever';
+export type { RouteRetention };
 
 export const retentionOptions: readonly { value: RouteRetention; label: string }[] = [
   { value: 'threeMonths', label: '3 ay' },

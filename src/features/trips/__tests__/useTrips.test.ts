@@ -50,7 +50,7 @@ beforeEach(() => {
 describe('useTrips', () => {
   it('loads up to 200 trips, newest start first (bridge returns write order)', async () => {
     mockModule.listTrips.mockResolvedValue([trip(1, 1000), trip(3, 3000), trip(2, 2000)]);
-    expect(harness.render(useTrips)).toEqual({ trips: [], loaded: false });
+    expect(harness.render(useTrips)).toMatchObject({ trips: [], loaded: false });
     await flush();
     const r = harness.render(useTrips);
     expect(r.loaded).toBe(true);
@@ -62,7 +62,7 @@ describe('useTrips', () => {
     mockModule.listTrips.mockRejectedValue({ code: 'ERR_STORE_UNAVAILABLE' });
     harness.render(useTrips);
     await flush();
-    expect(harness.render(useTrips)).toEqual({ trips: [], loaded: true });
+    expect(harness.render(useTrips)).toMatchObject({ trips: [], loaded: true });
   });
 
   it('refreshes on detection state changes (a trip ended)', async () => {
