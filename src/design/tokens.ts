@@ -97,6 +97,7 @@ export const icon = {
   diagnostics: 'stethoscope',
   directions: 'arrow.triangle.turn.up.right.diamond.fill',
   warning: 'exclamationmark.triangle.fill',
+  settings: 'gearshape.fill',
 } as const satisfies Record<string, SFSymbol>;
 
 export type IconName = keyof typeof icon;

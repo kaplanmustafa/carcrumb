@@ -89,6 +89,11 @@ jobs:
           shot 05-components-dark       dark  large components
           shot 06-permission-light      light large permission
           shot 07-states-largest-text   light accessibility-extra-extra-extra-large states
+          shot 08-motion-permission     light large motion
+          shot 09-home-parked-light     light large home-parked
+          shot 10-home-parked-dark      dark  large home-parked
+          shot 11-home-low-confidence   light large home-low
+          shot 12-home-location-off     light large home-off
           ls -la screenshots
       - uses: actions/upload-artifact@v4
         if: always()
