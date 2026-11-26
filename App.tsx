@@ -6,6 +6,7 @@ import { Screen } from './src/design/components';
 import { HomeScreen } from './src/features/home/HomeScreen';
 import { useHomeData } from './src/features/home/useHomeData';
 import { walkingDirectionsUrl } from './src/features/parking/directions';
+import { markAsked } from './src/features/permissions/asked';
 import { nextOnboardingStep } from './src/features/permissions/flow';
 import { OnboardingScreen } from './src/features/permissions/OnboardingScreen';
 import { DesignPreview, requestedPreview } from './src/features/preview/DesignPreview';
@@ -16,14 +17,19 @@ export default function App() {
   return <Root />;
 }
 
+/** A system dialog that never reports back must not leave the screen hanging. */
+const DIALOG_TIMEOUT_MS = 30_000;
+
 function Root() {
   const { data, refresh } = useHomeData();
 
   const request = useCallback(
-    (fn: () => Promise<unknown>) => () => {
-      // Errors only mean the prompt could not be shown; the refresh shows the real status.
-      void fn()
+    (fn: () => Promise<unknown>, after?: () => void) => () => {
+      const timeout = new Promise((resolve) => setTimeout(resolve, DIALOG_TIMEOUT_MS));
+      // Errors only mean the dialog could not be shown; the refresh shows the real status.
+      void Promise.race([fn(), timeout])
         .catch(() => undefined)
+        .then(() => after?.())
         .then(refresh);
     },
     [refresh],
@@ -36,14 +42,37 @@ function Root() {
 
   if (!data.loaded) return <Screen title="CarCrumb">{null}</Screen>;
 
-  const diagnostics = data.diagnostics;
-  const step = diagnostics ? nextOnboardingStep(diagnostics.location.authorization, diagnostics.motion.authorization) : 'done';
+  const d = data.diagnostics;
+  // Without diagnostics the engine is not running: show the (still usable) home screen.
+  const step = d
+    ? nextOnboardingStep({
+        location: d.location.authorization,
+        servicesEnabled: d.location.servicesEnabled,
+        motion: d.motion.authorization,
+        motionAvailable: d.motion.available,
+        motionAsked: data.motionAsked,
+        alwaysAsked: data.alwaysAsked,
+      })
+    : 'done';
 
   if (step === 'location') {
     return <OnboardingScreen step="location" onContinue={request(() => CarCrumbDetection.requestWhenInUseAuthorization())} />;
   }
   if (step === 'motion') {
-    return <OnboardingScreen step="motion" onContinue={request(() => CarCrumbDetection.requestMotionAuthorization())} />;
+    return (
+      <OnboardingScreen
+        step="motion"
+        onContinue={request(() => CarCrumbDetection.requestMotionAuthorization(), () => markAsked('motion'))}
+      />
+    );
+  }
+  if (step === 'always') {
+    return (
+      <OnboardingScreen
+        step="always"
+        onContinue={request(() => CarCrumbDetection.requestAlwaysAuthorization(), () => markAsked('always'))}
+      />
+    );
   }
 
   return (
@@ -51,7 +80,6 @@ function Root() {
       data={data}
       actions={{
         onDirections,
-        onUpgradeAlways: request(() => CarCrumbDetection.requestAlwaysAuthorization()),
         onOpenSettings: () => void Linking.openSettings().catch(() => undefined),
       }}
     />

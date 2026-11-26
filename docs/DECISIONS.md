@@ -109,7 +109,9 @@ Arka plan konumu uygulamanın kendisi olduğu için gerekçemiz güçlü; redded
 | 5.1.1 Privacy manifest | `PrivacyInfo.xcprivacy` zorunlu | Proje iskeletine baştan eklenecek |
 | Gizlilik etiketi | Gerçek davranışla tutarlı olmalı | "Data Not Collected"; analitik ve crash SDK'ları bu beyana göre seçilecek |
 
-**İzin akışı:** Önce "While Using" istenir. İlk otomatik algılamadan sonra bağlamıyla birlikte "Always"a yükseltme istenir.
+**İzin akışı (26 Kasım 2026):** Sırayla "While Using", hareket, ardından ayrı bir açıklama ekranıyla "Always" yükseltmesi istenir; her biri tek butonlu açıklama ekranı. Always ilk algılamaya bırakılmaz: While Using ile iOS uygulamayı arka planda uyandırmadığı için o an çoğu kullanıcıda hiç gelmez. iOS yükseltme penceresini bir kez gösterir; reddeden kullanıcıya ana ekranda Ayarlar'a yönlendiren kart gösterilir. Konum Servisleri kapalıysa ya da hareket algılama yoksa ilgili adım atlanır.
+
+**Yürüyüş rotası:** Park konumu yalnızca kullanıcı "Yürüyüş rotası"na dokununca Apple Haritalar uygulamasına aktarılır (`maps://`); CarCrumb kendisi hiçbir sunucuya veri göndermez. Gizlilik etiketi "Data Not Collected" olarak kalır.
 
 **CarPlay:** Kategori Driving Task. Ana şablon dahil en fazla iki şablon; konum bulucu olamaz ve özel harita kullanamaz. Rolü yolculuk durumu, iş/kişisel etiketleme ve "Buraya park ettim" düğmesiyle sınırlı.
 

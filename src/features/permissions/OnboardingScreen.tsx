@@ -13,7 +13,14 @@ export const permissionCopy: Record<Exclude<OnboardingStep, 'done'>, { title: st
     explanation:
       'CarCrumb, sürüşü ve araçtan inip yürümeye başladığını ayırt etmek için hareket verilerini kullanır. Veriler yalnızca bu cihazda kalır.',
   },
+  always: {
+    title: 'Arka planda kayıt',
+    explanation:
+      'Uygulama kapalıyken de yolculuklarını ve park yerini kendiliğinden kaydedebilmek için CarCrumb konumuna her zaman erişmeli. Tercihini sonraki pencerede yapabilirsin; veriler yalnızca bu cihazda kalır.',
+  },
 };
+
+const stepIcon = { location: 'location', motion: 'motion', always: 'car' } as const;
 
 export function OnboardingScreen({ step, onContinue }: { step: Exclude<OnboardingStep, 'done'>; onContinue: () => void }) {
   const copy = permissionCopy[step];
@@ -21,7 +28,7 @@ export function OnboardingScreen({ step, onContinue }: { step: Exclude<Onboardin
     <PermissionScreen
       title={copy.title}
       explanation={copy.explanation}
-      iconName={step === 'location' ? 'location' : 'motion'}
+      iconName={stepIcon[step]}
       onContinue={onContinue}
     />
   );

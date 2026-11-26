@@ -7,6 +7,7 @@ import CarCrumbDetection, {
   type ParkingRecord,
   type TripRecord,
 } from '../../../modules/carcrumb-detection';
+import { wasAsked } from '../permissions/asked';
 
 export type HomeData = {
   loaded: boolean;
@@ -17,6 +18,9 @@ export type HomeData = {
   trips: TripRecord[];
   /** The database is not readable yet (device restarted and not unlocked). */
   storeUnavailable: boolean;
+  /** iOS shows these dialogs once; see src/features/permissions/asked.ts. */
+  motionAsked: boolean;
+  alwaysAsked: boolean;
 };
 
 const TRIPS_FOR_HOME = 20;
@@ -29,6 +33,8 @@ const initial = (): HomeData => ({
   recentParkings: [],
   trips: [],
   storeUnavailable: false,
+  motionAsked: wasAsked('motion'),
+  alwaysAsked: wasAsked('always'),
 });
 
 function errorCode(e: unknown): string | undefined {
@@ -43,8 +49,12 @@ function errorCode(e: unknown): string | undefined {
 export function useHomeData(): { data: HomeData; refresh: () => Promise<void> } {
   const [data, setData] = useState<HomeData>(initial);
   const mounted = useRef(true);
+  // Several refreshes can overlap (dialog closes → .then(refresh) and AppState 'active' at
+  // once, plus state changes). Only the most recently started one may write.
+  const latest = useRef(0);
 
   const refresh = useCallback(async () => {
+    const run = ++latest.current;
     const diagnostics = await CarCrumbDetection.getDiagnostics().catch(() => null);
     let storeUnavailable = false;
     const read = async <T,>(fn: () => Promise<T>, fallback: T): Promise<T> => {
@@ -60,7 +70,7 @@ export function useHomeData(): { data: HomeData; refresh: () => Promise<void> } 
       read(() => CarCrumbDetection.listRecentParkings(), [] as ParkingRecord[]),
       read(() => CarCrumbDetection.listTrips(TRIPS_FOR_HOME), [] as TripRecord[]),
     ]);
-    if (!mounted.current) return;
+    if (!mounted.current || run !== latest.current) return;
     setData({
       loaded: true,
       state: CarCrumbDetection.getState(),
@@ -69,6 +79,8 @@ export function useHomeData(): { data: HomeData; refresh: () => Promise<void> } 
       recentParkings,
       trips,
       storeUnavailable,
+      motionAsked: wasAsked('motion'),
+      alwaysAsked: wasAsked('always'),
     });
   }, []);
 

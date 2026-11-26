@@ -7,19 +7,20 @@ import type { ParkingRecord } from '../../../modules/carcrumb-detection';
 import { InfoRow, PrimaryButton, Screen, SecondaryButton, Section, StatusLabel, TimeRow, Txt } from '../../design/components';
 import { statePresentation } from '../detection/presentation';
 import { confidenceCopy } from '../parking/presentation';
-import { isLocationOff, shouldOfferAlways } from '../permissions/flow';
+import { isLocationOff, needsAlwaysInSettings } from '../permissions/flow';
 import type { HomeData } from './useHomeData';
 
 export type HomeActions = {
   onDirections: (park: ParkingRecord) => void;
-  onUpgradeAlways: () => void;
   onOpenSettings: () => void;
 };
+
+const DIRECTIONS_NOTE = 'Yürüyüş rotası için park konumu yalnızca dokunduğunda Apple Haritalar’a aktarılır.';
 
 export function HomeScreen({ data, actions }: { data: HomeData; actions: HomeActions }) {
   const location = data.diagnostics?.location;
   const locationOff = location ? isLocationOff(location.authorization, location.servicesEnabled) : false;
-  const offerAlways = location ? shouldOfferAlways(location.authorization, data.trips) : false;
+  const alwaysInSettings = location ? needsAlwaysInSettings(location.authorization, data.alwaysAsked, location.servicesEnabled) : false;
   const park = data.parking;
   const alternatives = park && park.confidence === 'low' ? data.recentParkings.filter((p) => p.id !== park.id) : [];
   const state = statePresentation[data.state];
@@ -36,7 +37,9 @@ export function HomeScreen({ data, actions }: { data: HomeData; actions: HomeAct
         </Section>
       ) : null}
 
-      <Section title="Aracın" footer={park ? confidenceCopy[park.confidence].hint : undefined}>
+      <Section
+        title="Aracın"
+        footer={park ? [confidenceCopy[park.confidence].hint, DIRECTIONS_NOTE].filter(Boolean).join(' ') : undefined}>
         {park ? (
           <>
             <StatusLabel
@@ -64,12 +67,13 @@ export function HomeScreen({ data, actions }: { data: HomeData; actions: HomeAct
         </Section>
       ) : null}
 
-      {offerAlways ? (
-        <Section
-          title="Arka planda kayıt"
-          footer="Bir sonraki ekranda konum iznini “Her Zaman” olarak değiştirebilirsin.">
-          <Txt>Uygulama kapalıyken de yolculuklarını ve park yerini kaydedebilmemiz için konuma her zaman erişim gerekiyor.</Txt>
-          <PrimaryButton label="Devam" onPress={actions.onUpgradeAlways} />
+      {alwaysInSettings ? (
+        <Section title="Arka planda kayıt kapalı" footer="Ayarlar › Konum bölümünden “Her Zaman” seçeneğini açabilirsin.">
+          <Txt>
+            Yolculuk ve park yeri yalnızca uygulama açıkken kaydediliyor. Uygulama kapalıyken de kaydetmek için konuma
+            her zaman erişim gerekiyor.
+          </Txt>
+          <PrimaryButton label="Ayarları aç" iconName="settings" onPress={actions.onOpenSettings} />
         </Section>
       ) : null}
 

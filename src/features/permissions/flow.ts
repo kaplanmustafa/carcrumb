@@ -1,20 +1,34 @@
 /**
- * Permission flow (docs/DECISIONS.md, "App Store ve izinler"):
- * 1. While Using location, 2. motion — each behind a one-button explanation screen.
- * 3. Always is requested later, with context, after the first automatic detection.
- * No step is skippable in-app: declining happens in the system dialog, and the app keeps
- * working without location (konumsuz mod, App Store 5.1.5).
+ * Permission flow (docs/DECISIONS.md, "İzin akışı"):
+ * 1. While Using location, 2. motion, 3. Always — each behind a one-button explanation
+ * screen that goes straight to the system dialog. Declining happens in the system dialog,
+ * and the app keeps working without location (konumsuz mod, App Store 5.1.5).
  *
- * Decided from the live authorization status only, so there is no "onboarding done" flag
- * to get out of sync with Settings.
+ * Decided from the live authorization status plus two "already asked" marks, because iOS
+ * shows the motion and the Always-upgrade dialogs only once: without the marks a user who
+ * declined would be stuck on the explanation screen.
  */
-import type { LocationAuthorization, MotionAuthorization, TripRecord } from '../../../modules/carcrumb-detection';
+import type { LocationAuthorization, MotionAuthorization } from '../../../modules/carcrumb-detection';
 
-export type OnboardingStep = 'location' | 'motion' | 'done';
+export type OnboardingStep = 'location' | 'motion' | 'always' | 'done';
 
-export function nextOnboardingStep(location: LocationAuthorization, motion: MotionAuthorization): OnboardingStep {
-  if (location === 'notDetermined') return 'location';
-  if (motion === 'notDetermined') return 'motion';
+export type PermissionSnapshot = {
+  location: LocationAuthorization;
+  /** Location Services switched on system-wide. Off: iOS shows no permission dialog at all. */
+  servicesEnabled: boolean;
+  motion: MotionAuthorization;
+  /** Motion activity hardware/API available (false on the simulator). */
+  motionAvailable: boolean;
+  motionAsked: boolean;
+  alwaysAsked: boolean;
+};
+
+export function nextOnboardingStep(p: PermissionSnapshot): OnboardingStep {
+  // With Location Services off iOS cannot show the dialog; skip to keep the app usable.
+  if (p.location === 'notDetermined' && p.servicesEnabled) return 'location';
+  if (p.motion === 'notDetermined' && p.motionAvailable && !p.motionAsked) return 'motion';
+  // The upgrade dialog only exists from While Using, and iOS shows it once.
+  if (p.location === 'whenInUse' && !p.alwaysAsked) return 'always';
   return 'done';
 }
 
@@ -24,9 +38,14 @@ export function isLocationOff(location: LocationAuthorization, servicesEnabled: 
 }
 
 /**
- * Offer the Always upgrade only with context: While Using is granted and the app has
- * already recorded a confirmed trip, so the user has seen what automatic detection does.
+ * Always was asked and the user kept While Using: automatic detection cannot wake the app,
+ * and iOS will not show the dialog again, so the home screen points to Settings instead.
  */
-export function shouldOfferAlways(location: LocationAuthorization, trips: readonly TripRecord[]): boolean {
-  return location === 'whenInUse' && trips.some((t) => t.status === 'confirmed');
+export function needsAlwaysInSettings(
+  location: LocationAuthorization,
+  alwaysAsked: boolean,
+  servicesEnabled: boolean,
+): boolean {
+  // With Location Services off the "Konum kapalı" card already covers it; upgrading is moot.
+  return servicesEnabled && location === 'whenInUse' && alwaysAsked;
 }

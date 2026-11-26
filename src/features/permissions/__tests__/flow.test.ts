@@ -1,32 +1,52 @@
-import type { TripRecord } from '../../../../modules/carcrumb-detection';
-import { isLocationOff, nextOnboardingStep, shouldOfferAlways } from '../flow';
+import { isLocationOff, needsAlwaysInSettings, nextOnboardingStep, type PermissionSnapshot } from '../flow';
 
-const trip = (status: TripRecord['status']): TripRecord => ({
-  id: 1,
-  startedAt: 0,
-  endedAt: status === 'open' ? null : 1,
-  status,
-  distanceMeters: null,
-});
+const fresh: PermissionSnapshot = {
+  location: 'notDetermined',
+  servicesEnabled: true,
+  motion: 'notDetermined',
+  motionAvailable: true,
+  motionAsked: false,
+  alwaysAsked: false,
+};
+const snap = (over: Partial<PermissionSnapshot>): PermissionSnapshot => ({ ...fresh, ...over });
 
 describe('nextOnboardingStep', () => {
   it('asks While Using location first', () => {
-    expect(nextOnboardingStep('notDetermined', 'notDetermined')).toBe('location');
+    expect(nextOnboardingStep(fresh)).toBe('location');
   });
 
   it('asks motion once location is decided, whatever the answer', () => {
-    for (const loc of ['whenInUse', 'always', 'denied', 'restricted'] as const) {
-      expect(nextOnboardingStep(loc, 'notDetermined')).toBe('motion');
+    for (const location of ['whenInUse', 'always', 'denied', 'restricted'] as const) {
+      expect(nextOnboardingStep(snap({ location }))).toBe('motion');
     }
   });
 
-  it('is done when both are decided, including refusals (konumsuz mod)', () => {
-    expect(nextOnboardingStep('denied', 'denied')).toBe('done');
-    expect(nextOnboardingStep('whenInUse', 'authorized')).toBe('done');
+  it('asks the Always upgrade right after motion, from While Using only', () => {
+    expect(nextOnboardingStep(snap({ location: 'whenInUse', motion: 'authorized' }))).toBe('always');
+    expect(nextOnboardingStep(snap({ location: 'whenInUse', motion: 'denied' }))).toBe('always');
+  });
+
+  it('is done when everything is decided, including refusals (konumsuz mod)', () => {
+    expect(nextOnboardingStep(snap({ location: 'always', motion: 'authorized' }))).toBe('done');
+    expect(nextOnboardingStep(snap({ location: 'denied', motion: 'denied' }))).toBe('done');
+  });
+
+  it('does not loop on the Always screen after the one-time dialog (user kept While Using)', () => {
+    expect(nextOnboardingStep(snap({ location: 'whenInUse', motion: 'authorized', alwaysAsked: true }))).toBe('done');
+  });
+
+  it('skips location when Location Services are off (no dialog possible, app must stay usable)', () => {
+    expect(nextOnboardingStep(snap({ servicesEnabled: false }))).toBe('motion');
+    expect(nextOnboardingStep(snap({ servicesEnabled: false, motion: 'authorized' }))).toBe('done');
+  });
+
+  it('skips motion when unavailable (simulator) or already asked', () => {
+    expect(nextOnboardingStep(snap({ location: 'denied', motionAvailable: false }))).toBe('done');
+    expect(nextOnboardingStep(snap({ location: 'denied', motionAsked: true }))).toBe('done');
   });
 
   it('never blocks on an engine that has not started', () => {
-    expect(nextOnboardingStep('unavailable', 'unknown')).toBe('done');
+    expect(nextOnboardingStep(snap({ location: 'unavailable', motion: 'unknown' }))).toBe('done');
   });
 });
 
@@ -43,19 +63,15 @@ describe('isLocationOff', () => {
   });
 });
 
-describe('shouldOfferAlways', () => {
-  it('needs While Using and a confirmed trip (context first)', () => {
-    expect(shouldOfferAlways('whenInUse', [trip('confirmed')])).toBe(true);
+describe('needsAlwaysInSettings', () => {
+  it('points to Settings only after the one-time upgrade dialog was declined', () => {
+    expect(needsAlwaysInSettings('whenInUse', true, true)).toBe(true);
+    expect(needsAlwaysInSettings('whenInUse', false, true)).toBe(false);
+    expect(needsAlwaysInSettings('always', true, true)).toBe(false);
+    expect(needsAlwaysInSettings('denied', true, true)).toBe(false);
   });
 
-  it('is not offered before any confirmed trip', () => {
-    expect(shouldOfferAlways('whenInUse', [])).toBe(false);
-    expect(shouldOfferAlways('whenInUse', [trip('uncertain'), trip('open')])).toBe(false);
-  });
-
-  it('is not offered when Always is already granted or location is off', () => {
-    expect(shouldOfferAlways('always', [trip('confirmed')])).toBe(false);
-    expect(shouldOfferAlways('denied', [trip('confirmed')])).toBe(false);
-    expect(shouldOfferAlways('notDetermined', [trip('confirmed')])).toBe(false);
+  it('is not shown while Location Services are off (the Konum kapalı card covers it)', () => {
+    expect(needsAlwaysInSettings('whenInUse', true, false)).toBe(false);
   });
 });

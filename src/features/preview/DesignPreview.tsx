@@ -21,6 +21,7 @@ export type PreviewScreen =
   | 'components'
   | 'permission'
   | 'motion'
+  | 'always'
   | 'home-parked'
   | 'home-low'
   | 'home-off';
@@ -30,6 +31,7 @@ const SCREENS: readonly PreviewScreen[] = [
   'components',
   'permission',
   'motion',
+  'always',
   'home-parked',
   'home-low',
   'home-off',
@@ -90,6 +92,8 @@ function homeData(kind: HomePreview): HomeData {
       recentParkings: [],
       trips: [],
       storeUnavailable: false,
+      motionAsked: true,
+      alwaysAsked: false,
     };
   }
   const trip: TripRecord = { id: 3, startedAt: minutesAgo(40), endedAt: minutesAgo(12), status: 'confirmed', distanceMeters: null };
@@ -99,19 +103,23 @@ function homeData(kind: HomePreview): HomeData {
   return {
     loaded: true,
     state: 'PARKED',
-    diagnostics: diagnostics('whenInUse'),
+    // home-low also shows the "Always declined → Settings" card.
+    diagnostics: diagnostics(kind === 'home-low' ? 'whenInUse' : 'always'),
     parking: current,
     recentParkings: recent,
     trips: [trip],
     storeUnavailable: false,
+    motionAsked: true,
+    alwaysAsked: true,
   };
 }
 
-const previewActions = { onDirections: noop, onUpgradeAlways: noop, onOpenSettings: noop };
+const previewActions = { onDirections: noop, onOpenSettings: noop };
 
 export function DesignPreview({ screen }: { screen: PreviewScreen }) {
   if (screen === 'permission') return <OnboardingScreen step="location" onContinue={noop} />;
   if (screen === 'motion') return <OnboardingScreen step="motion" onContinue={noop} />;
+  if (screen === 'always') return <OnboardingScreen step="always" onContinue={noop} />;
   if (screen === 'home-parked' || screen === 'home-low' || screen === 'home-off') {
     return <HomeScreen data={homeData(screen)} actions={previewActions} />;
   }
