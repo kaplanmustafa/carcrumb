@@ -44,6 +44,8 @@ final class RouteSamplerTests: XCTestCase {
     XCTAssertEqual(c.minVehicleSpeed, DetectionConfig().maxWalkingSpeed, "same threshold as the reducer's movement evidence")
     XCTAssertEqual(c.maxPointsPerTrip, 5000)
     XCTAssertEqual(c.flushBatchSize, 20)
+    XCTAssertEqual(c.maxPendingAge, 60)
+    XCTAssertEqual(c.maxClockStepBack, 60)
   }
 
   func testNothingWithoutTripOrOutsideDriving() {
@@ -165,10 +167,11 @@ enum RouteStoreScenarios {
     let trip = try store.beginTrip(startedAt: StoreFixtures.date(0))
     let route = RouteFixtures.straightRoute(6)
     XCTAssertEqual(try store.appendRoutePoints(Array(route[0..<4]), tripID: trip, maxPoints: 5000),
-                   RouteAppendResult(storedCount: 4, thinned: false), file: file, line: line)
+                   RouteAppendResult(storedCount: 4, thinCount: 0), file: file, line: line)
     try store.appendRoutePoints(Array(route[4...]), tripID: trip, maxPoints: 5000)
     XCTAssertEqual(try store.tripRoute(tripID: trip), route, "batches keep route order", file: file, line: line)
-    XCTAssertNil(try store.trips(limit: 1).first?.distanceMeters, "open trip: no distance yet", file: file, line: line)
+    XCTAssertEqual(try XCTUnwrap(try store.trips(limit: 1).first?.distanceMeters, file: file, line: line), 500, accuracy: 0.01,
+                   "open trip: running distance across both batches (bridge segment included)", file: file, line: line)
 
     try store.endTrip(tripID: trip, status: .confirmed, endedAt: StoreFixtures.date(600))
     let distance = try XCTUnwrap(try store.trips(limit: 1).first?.distanceMeters, file: file, line: line)
@@ -187,7 +190,7 @@ enum RouteStoreScenarios {
 
   static func unknownTripWritesNothing(_ store: DetectionStore, file: StaticString = #filePath, line: UInt = #line) throws {
     XCTAssertEqual(try store.appendRoutePoints(RouteFixtures.straightRoute(3), tripID: 999_999, maxPoints: 5000),
-                   RouteAppendResult(storedCount: 0, thinned: false), file: file, line: line)
+                   RouteAppendResult(storedCount: 0, thinCount: 0), file: file, line: line)
     XCTAssertEqual(try store.tripRoute(tripID: 999_999), [], file: file, line: line)
   }
 
@@ -196,7 +199,7 @@ enum RouteStoreScenarios {
     let route = RouteFixtures.straightRoute(13)
     try store.appendRoutePoints(Array(route[0..<8]), tripID: trip, maxPoints: 10)
     XCTAssertEqual(try store.appendRoutePoints(Array(route[8...]), tripID: trip, maxPoints: 10),
-                   RouteAppendResult(storedCount: 7, thinned: true), file: file, line: line)
+                   RouteAppendResult(storedCount: 7, thinCount: 1), file: file, line: line)
     XCTAssertEqual(try store.tripRoute(tripID: trip), stride(from: 0, to: 13, by: 2).map { route[$0] },
                    "every second point, first and last kept", file: file, line: line)
     // Later points still come after the thinned ones.

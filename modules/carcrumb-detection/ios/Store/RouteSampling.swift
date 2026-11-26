@@ -78,6 +78,14 @@ public struct RouteSamplingConfig: Equatable, Sendable {
   /// ... or when the oldest pending point is this old (s), so a process death (jetsam) loses
   /// at most about a minute of route. The trip end always flushes.
   public var maxPendingAge: TimeInterval = 60
+  /// A fix older than the last kept point by MORE than this (s) means the device clock was
+  /// set back (manual change, wrong RTC corrected), not a late / out-of-order delivery: the
+  /// spacing reference is reset and recording continues from that fix. Without it every fix
+  /// until the clock catches up (up to the size of the jump) would be "older than the last
+  /// kept point" and dropped. 60 s: NTP corrections are a few seconds and keep the strict
+  /// "newer than the last kept point" rule (they only cost those seconds); a `liveUpdates`
+  /// fix is not delivered a minute late while the loop runs.
+  public var maxClockStepBack: TimeInterval = 60
 
   public init() {}
 }
@@ -92,7 +100,10 @@ public struct RouteSamplingConfig: Equatable, Sendable {
 ///    reducer back to DRIVING, so it is offered as DRIVING (traffic, not a park);
 /// 2. vehicle speed (> `minVehicleSpeed`);
 /// 3. valid accuracy (>= 0) not worse than `maxAccuracy`;
-/// 4. newer than the last kept point (out-of-order fixes are dropped);
+/// 4. newer than the last kept point (out-of-order fixes are dropped), unless it is more
+///    than `maxClockStepBack` older: then the clock was set back, the reference is reset and
+///    the fix is kept (`shouldFlush` writes the pending batch right away, so one batch never
+///    mixes the two clocks);
 /// 5. `minDistance` OR `minInterval` from the last kept point (both scaled by `spacingScale`).
 ///
 /// A locked database (before the first unlock) is NOT handled here by buffering: the engine
@@ -105,17 +116,23 @@ public struct RouteSampler: Equatable, Sendable {
   public private(set) var pending: [RoutePoint] = []
   /// Last chosen point (pending or written); the spacing rules compare against it.
   public private(set) var lastKept: RoutePoint?
-  /// 1, doubled at every thinning of the stored route (`didThin`).
+  /// 1, doubled at every thinning of the stored route (`didThin`). Restored after a relaunch
+  /// from the store (`DetectionStore.routeThinCount`), so a long trip keeps its density.
   public private(set) var spacingScale: Double = 1
+  /// A backwards clock jump was detected since the last `takePending`: flush now.
+  public private(set) var clockSetBack = false
 
   public init(config: RouteSamplingConfig = RouteSamplingConfig()) {
     self.config = config
   }
 
-  /// Starts recording a new trip; drops anything of a previous one.
-  public mutating func begin(tripID: Int64) {
+  /// Starts recording a trip; drops anything of a previous one. `thinCount`: how often the
+  /// trip's stored route was already thinned (a trip restored after a relaunch; 0 for a new
+  /// trip), so the spacing continues where the previous process left it.
+  public mutating func begin(tripID: Int64, thinCount: Int = 0) {
     self = RouteSampler(config: config)
     self.tripID = tripID
+    didThin(times: thinCount)
   }
 
   /// Stops recording; pending points are dropped (flush first if they must be written).
@@ -132,7 +149,10 @@ public struct RouteSampler: Equatable, Sendable {
     guard sample.latitude.isFinite, sample.longitude.isFinite,
           abs(sample.latitude) <= 90, abs(sample.longitude) <= 180 else { return false }
     let point = RoutePoint(sample)
-    if let last = lastKept {
+    if let last = lastKept, last.timestamp.timeIntervalSince(point.timestamp) > config.maxClockStepBack {
+      // Clock set back (rule 4): reset the reference, keep this fix, flush the old batch.
+      clockSetBack = true
+    } else if let last = lastKept {
       guard point.timestamp > last.timestamp else { return false }
       let farEnough = point.distance(to: last) >= config.minDistance * spacingScale
       let longEnough = point.timestamp.timeIntervalSince(last.timestamp) >= config.minInterval * spacingScale
@@ -143,25 +163,34 @@ public struct RouteSampler: Equatable, Sendable {
     return true
   }
 
-  /// True when the pending points should be written now (batch full or oldest too old).
-  /// `now` is the engine's clock; the age uses fix timestamps when `now` is earlier (clock
-  /// jumps never block a flush forever: a full batch always flushes).
+  /// True when the pending points should be written now: batch full, a backwards clock jump
+  /// was detected, or the oldest pending point is `maxPendingAge` old. The age is measured
+  /// both against `now` (the engine's clock) and against the newest pending fix; the larger
+  /// wins. So when the engine clock is behind the fix timestamps, the span of the pending
+  /// fixes still triggers the flush and a jetsam loses about `maxPendingAge` of route at most.
   public func shouldFlush(now: Date) -> Bool {
-    guard tripID != nil, let oldest = pending.first else { return false }
-    if pending.count >= config.flushBatchSize { return true }
-    return now.timeIntervalSince(oldest.timestamp) >= config.maxPendingAge
+    guard tripID != nil, let oldest = pending.first, let newest = pending.last else { return false }
+    if pending.count >= config.flushBatchSize || clockSetBack { return true }
+    let age = max(now.timeIntervalSince(oldest.timestamp), newest.timestamp.timeIntervalSince(oldest.timestamp))
+    return age >= config.maxPendingAge
   }
 
   /// Hands the pending points to the writer (they are gone from the sampler even if the
   /// write fails: a failed batch is dropped, not retried, so the route only has gaps).
   public mutating func takePending() -> [RoutePoint] {
-    defer { pending.removeAll() }
+    defer {
+      pending.removeAll()
+      clockSetBack = false
+    }
     return pending
   }
 
-  /// The store thinned this trip's route (`RouteAppendResult.thinned`): halve future density.
-  public mutating func didThin() {
-    spacingScale *= 2
+  /// The store thinned this trip's route `times` times (`RouteAppendResult.thinCount`; one
+  /// append far above the cap can halve it more than once): halve future density each time.
+  /// Capped at 2^20 so a corrupt count cannot overflow the spacing.
+  public mutating func didThin(times: Int = 1) {
+    guard times > 0 else { return }
+    spacingScale *= Double(1 << min(times, 20))
   }
 }
 
@@ -169,12 +198,16 @@ public struct RouteSampler: Equatable, Sendable {
 public struct RouteAppendResult: Equatable, Sendable {
   /// Points stored for the trip after the write (and thinning).
   public var storedCount: Int
-  /// The route exceeded `maxPointsPerTrip` and was thinned in the same transaction.
-  public var thinned: Bool
+  /// How many times the route was halved in the same transaction (0: not thinned). More
+  /// than 1 when one append lands far above `maxPointsPerTrip`.
+  public var thinCount: Int
 
-  public init(storedCount: Int, thinned: Bool) {
+  /// The route exceeded `maxPointsPerTrip` and was thinned in the same transaction.
+  public var thinned: Bool { thinCount > 0 }
+
+  public init(storedCount: Int, thinCount: Int) {
     self.storedCount = storedCount
-    self.thinned = thinned
+    self.thinCount = thinCount
   }
 }
 
@@ -190,18 +223,58 @@ public enum RouteThinning {
   /// Applies `positionsToRemove` until at most `maxCount` remain. Pure twin of the store's
   /// SQL thinning (used by the in-memory store and tests).
   public static func thin<T>(_ points: [T], maxCount: Int) -> (points: [T], thinned: Bool) {
+    let (result, passes) = thinCounting(points, maxCount: maxCount)
+    return (result, passes > 0)
+  }
+
+  /// `thin`, also returning how many halvings were applied.
+  public static func thinCounting<T>(_ points: [T], maxCount: Int) -> (points: [T], passes: Int) {
     var result = points
-    var thinned = false
+    var passes = 0
     while result.count > max(2, maxCount) {
       let remove = Set(positionsToRemove(count: result.count))
       result = result.enumerated().filter { !remove.contains($0.offset) }.map(\.element)
-      thinned = true
+      passes += 1
     }
-    return (result, thinned)
+    return (result, passes)
+  }
+
+  /// Thinnings already applied to a stored route, from the `seq` of its first two points.
+  ///
+  /// `seq` is assigned contiguously (MAX + 1; a dropped batch never takes a seq), and every
+  /// thinning removes position 1 and keeps positions 0 and 2 of a uniformly thinned head, so
+  /// the gap between the first two stored seqs doubles at each thinning: gap = 2^thinCount.
+  /// Restores `RouteSampler.spacingScale` after a relaunch without persisting it separately.
+  public static func thinCount(firstSeq: Int64, secondSeq: Int64) -> Int {
+    let gap = secondSeq - firstSeq
+    guard gap > 1 else { return 0 }
+    return Int64.bitWidth - 1 - gap.leadingZeroBitCount // floor(log2(gap))
   }
 }
 
 public enum RouteDistance {
+  /// Distance (m) added by appending `points` after `previous` (the trip's last stored point,
+  /// nil for the first batch): the bridge segment plus the segments inside the batch. nil
+  /// when there is no segment at all (the distance stays unknown, not 0). The store sums these
+  /// at write time, BEFORE any thinning, so the trip distance does not shrink when a long
+  /// route is thinned (a thinned polyline cuts corners).
+  public static func increment(after previous: RoutePoint?, appending points: [RoutePoint]) -> Double? {
+    meters((previous.map { [$0] } ?? []) + points)
+  }
+
+  /// Distance written when a trip is closed (both stores): the accumulated total, or the
+  /// stored route's sum when that is larger. With a complete total the sum is never larger
+  /// (a thinned polyline is never longer than the one it came from); it only wins for a
+  /// route begun by a build without the running total. nil only when both are nil.
+  public static func closing(accumulated: Double?, routeSum: Double?) -> Double? {
+    switch (accumulated, routeSum) {
+    case let (a?, r?): return max(a, r)
+    case let (a?, nil): return a
+    case let (nil, r?): return r
+    case (nil, nil): return nil
+    }
+  }
+
   /// Driven distance (m): haversine sum over consecutive points in route order. nil for
   /// fewer than 2 points (no route, e.g. a trip written while the database was locked): the
   /// distance is unknown, not zero.

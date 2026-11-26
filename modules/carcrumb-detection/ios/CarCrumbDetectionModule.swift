@@ -129,6 +129,27 @@ public class CarCrumbDetectionModule: Module {
       }
     }
 
+    // MARK: Route retention (docs/DECISIONS.md "Rota saklama süresi")
+
+    /// "threeMonths" | "twelveMonths" (default) | "forever".
+    Function("getRouteRetention") { () -> String in
+      DetectionEngine.shared.routeRetention.rawValue
+    }
+
+    /// Stores the setting (UserDefaults, read by the engine also without JS) and deletes the
+    /// routes that are now expired before resolving. Rejects with ERR_INVALID_ARGUMENT for any
+    /// other value (nothing changed). A purge that cannot run yet (database locked) does not
+    /// reject: the setting is saved and the purge retried at the next engine start / daily run.
+    AsyncFunction("setRouteRetention") { (value: String, promise: Promise) in
+      guard let retention = RouteRetention(rawValue: value) else {
+        promise.reject("ERR_INVALID_ARGUMENT", "Unknown route retention value.")
+        return
+      }
+      DetectionEngine.shared.setRouteRetention(retention) {
+        promise.resolve(NSNull())
+      }
+    }
+
     // Debug sensor traces. Release builds: empty list / null.
     Function("listTraces") { () -> [String] in
       TraceRecorder.listTraces()

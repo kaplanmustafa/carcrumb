@@ -6,9 +6,6 @@ import CarCrumbDetection
 
 // QA edge cases for route recording (docs/DECISIONS.md "Rota kaydı"). Runs only on macOS CI
 // (`swift test`). Synthetic coordinates only (RouteFixtures: 41.0 / -40.0 + a few km north).
-//
-// Tests using XCTExpectFailure document known gaps (strict: they turn red once fixed — then
-// drop the wrapper and keep the assertions).
 
 /// Mirrors `DetectionEngine.reduceAndApply` + `recordRoute`: reduce, apply beginTrip/endTrip to
 /// the sampler, then offer a location fix only if the state AFTER reducing it is DRIVING.
@@ -101,24 +98,43 @@ final class RouteSamplerClockTests: XCTestCase {
     XCTAssertTrue(s.offer(RouteFixtures.sample(north: 400, at: 101), driving: true))
   }
 
-  /// Clock set back 1 h while driving (manual change / wrong RTC corrected): every new fix
-  /// is "older than the last kept point", so the route stops for the next hour of driving.
+  /// Clock set back 1 h while driving (manual change / wrong RTC corrected): the first fix
+  /// after the jump resets the spacing reference, recording continues at normal density, and
+  /// the batch from before the jump is flushed at once (one batch never mixes two clocks).
   func testClockSetBackOneHourKeepsRecording() {
     var s = sampler()
     XCTAssertTrue(s.offer(RouteFixtures.sample(north: 0, at: 3_600), driving: true))
+    XCTAssertFalse(s.shouldFlush(now: StoreFixtures.date(3_600)))
     var accepted = 0
     for i in 1...60 { // 10 min of driving after the jump, 150 m every 10 s
       let offset = Double(i) * 10
       if s.offer(RouteFixtures.sample(north: Double(i) * 150, at: offset), driving: true) { accepted += 1 }
+      if i == 1 {
+        XCTAssertTrue(s.clockSetBack)
+        XCTAssertTrue(s.shouldFlush(now: StoreFixtures.date(offset)), "flush right after the jump")
+        XCTAssertEqual(s.takePending().count, 2)
+        XCTAssertFalse(s.clockSetBack, "cleared by takePending")
+      }
     }
-    XCTExpectFailure("KNOWN GAP (RouteSampler): rule 4 drops every fix after a backwards clock jump") {
-      XCTAssertGreaterThan(accepted, 0)
-    }
+    XCTAssertEqual(accepted, 60, "every 150 m fix after the jump is a route point")
+    XCTAssertEqual(s.lastKept?.timestamp, StoreFixtures.date(600))
   }
 
-  /// `shouldFlush` doc: "the age uses fix timestamps when `now` is earlier". With the engine
-  /// clock behind the fixes and fewer than `flushBatchSize` points spanning > 60 s, it should
-  /// flush (otherwise a jetsam loses more than a minute); the code only compares with `now`.
+  /// Just above / at the step-back limit: > 60 s resets, exactly 60 s is still "older than the
+  /// last kept point" (NTP-sized corrections keep the strict rule).
+  func testClockStepBackLimit() {
+    var s = sampler()
+    XCTAssertTrue(s.offer(RouteFixtures.sample(north: 0, at: 1_000), driving: true))
+    XCTAssertFalse(s.offer(RouteFixtures.sample(north: 200, at: 940), driving: true), "exactly 60 s back: dropped")
+    XCTAssertFalse(s.clockSetBack)
+    XCTAssertTrue(s.offer(RouteFixtures.sample(north: 400, at: 939), driving: true), "61 s back: reset")
+    XCTAssertTrue(s.clockSetBack)
+    XCTAssertFalse(s.offer(RouteFixtures.sample(north: 410, at: 945), driving: true), "spacing from the new reference")
+  }
+
+  /// With the engine clock behind the fixes and fewer than `flushBatchSize` points spanning
+  /// >= 60 s, the age measured over the fix timestamps flushes (a jetsam loses at most about a
+  /// minute).
   func testAgeFlushWhenEngineClockIsBehindTheFixes() {
     var s = sampler()
     for i in 0..<4 {
@@ -126,10 +142,17 @@ final class RouteSamplerClockTests: XCTestCase {
     }
     XCTAssertEqual(s.pending.count, 4)
     XCTAssertTrue(s.shouldFlush(now: StoreFixtures.date(90)), "engine clock in step: 90 s old")
-    let behind = s.shouldFlush(now: StoreFixtures.date(-5_000))
-    XCTExpectFailure("KNOWN GAP (RouteSampler.shouldFlush): implementation does not match its doc comment") {
-      XCTAssertTrue(behind)
-    }
+    XCTAssertTrue(s.shouldFlush(now: StoreFixtures.date(-5_000)), "fixes span 90 s")
+  }
+
+  /// Engine clock behind, but the pending fixes only span < 60 s: not yet.
+  func testNoAgeFlushWhenFixesAreYoungAndClockIsBehind() {
+    var s = sampler()
+    XCTAssertTrue(s.offer(RouteFixtures.sample(north: 0, at: 0), driving: true))
+    XCTAssertTrue(s.offer(RouteFixtures.sample(north: 300, at: 30), driving: true))
+    XCTAssertFalse(s.shouldFlush(now: StoreFixtures.date(-5_000)))
+    XCTAssertFalse(s.shouldFlush(now: StoreFixtures.date(59)))
+    XCTAssertTrue(s.shouldFlush(now: StoreFixtures.date(60)))
   }
 }
 
@@ -141,7 +164,7 @@ enum RouteEdgeScenarios {
     let trip = try store.beginTrip(startedAt: StoreFixtures.date(0))
     let route = RouteFixtures.straightRoute(25)
     let result = try store.appendRoutePoints(route, tripID: trip, maxPoints: 10)
-    XCTAssertEqual(result, RouteAppendResult(storedCount: 7, thinned: true), "25 → 13 → 7", file: file, line: line)
+    XCTAssertEqual(result, RouteAppendResult(storedCount: 7, thinCount: 2), "25 → 13 → 7: two halvings", file: file, line: line)
     let stored = try store.tripRoute(tripID: trip)
     XCTAssertEqual(stored.first, route.first, file: file, line: line)
     XCTAssertEqual(stored.last, route.last, file: file, line: line)
@@ -155,7 +178,7 @@ enum RouteEdgeScenarios {
     XCTAssertTrue(try store.appendRoutePoints(RouteFixtures.straightRoute(15), tripID: trip, maxPoints: 10).thinned, file: file, line: line)
     try store.deleteAllHistory()
     XCTAssertEqual(try store.appendRoutePoints(RouteFixtures.straightRoute(15, from: 200), tripID: trip, maxPoints: 10),
-                   RouteAppendResult(storedCount: 0, thinned: false), file: file, line: line)
+                   RouteAppendResult(storedCount: 0, thinCount: 0), file: file, line: line)
     XCTAssertEqual(try store.tripRoute(tripID: trip), [], file: file, line: line)
 
     let next = try store.beginTrip(startedAt: StoreFixtures.date(1000))

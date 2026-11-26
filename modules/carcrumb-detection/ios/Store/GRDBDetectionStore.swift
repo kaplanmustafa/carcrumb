@@ -26,8 +26,8 @@ extension RoutePoint: FetchableRecord {}
 /// A write that is interrupted by the process being killed in the background (jetsam) never
 /// leaves a half-written main file, and commits are cheaper than rollback-journal fsyncs.
 /// Removed coordinates must not linger in the WAL: `secure_delete` zeroes them in the page
-/// images, every park write that can delete a row (replace / prune) is followed by
-/// `checkpoint(TRUNCATE)` (cheap here: tiny database, serial queue, no readers), and
+/// images, every write that deletes coordinates (park replace / prune, route thinning, route
+/// retention purge) is followed by `checkpoint(TRUNCATE)` (cheap here: tiny database, serial queue, no readers), and
 /// `journal_size_limit = 0` truncates the WAL whenever SQLite itself resets it.
 ///
 /// ## File protection / backup
@@ -185,8 +185,11 @@ public final class GRDBDetectionStore: DetectionStore {
         arguments: [startedAt, tripID, startedAt])
       return nil
     case let .end(tripID, status, endedAt):
-      // Distance from the stored route, in the same transaction as the close.
-      let distance = try RouteDistance.meters(Self.route(tripID: tripID, db))
+      // Running total from appendRoutePoints (not the thinned route); the route's own sum
+      // only covers a route begun by an older build. Same transaction as the close.
+      let accumulated = try Double.fetchOne(db, sql: "SELECT distanceMeters FROM trips WHERE id = ?", arguments: [tripID])
+      let distance = try RouteDistance.closing(
+        accumulated: accumulated, routeSum: RouteDistance.meters(Self.route(tripID: tripID, db)))
       try db.execute(
         sql: "UPDATE trips SET endedAt = ?, status = ?, distanceMeters = ? WHERE id = ?",
         arguments: [endedAt, StoredTripStatus(status).rawValue, distance, tripID])
@@ -329,9 +332,20 @@ public final class GRDBDetectionStore: DetectionStore {
     let queue = try database()
     let result = try queue.write { db -> RouteAppendResult in
       guard try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM trips WHERE id = ?)", arguments: [tripID]) == true else {
-        return RouteAppendResult(storedCount: 0, thinned: false) // deleted / unknown trip
+        return RouteAppendResult(storedCount: 0, thinCount: 0) // deleted / unknown trip
       }
       let maxSeq = try Int64.fetchOne(db, sql: "SELECT MAX(seq) FROM trip_points WHERE tripId = ?", arguments: [tripID])
+      // Running distance BEFORE thinning (the last stored point is never thinned away).
+      let previous = try maxSeq.flatMap {
+        try RoutePoint.fetchOne(
+          db, sql: "SELECT latitude, longitude, accuracy, timestamp FROM trip_points WHERE tripId = ? AND seq = ?",
+          arguments: [tripID, $0])
+      }
+      if let added = RouteDistance.increment(after: previous, appending: points) {
+        try db.execute(
+          sql: "UPDATE trips SET distanceMeters = COALESCE(distanceMeters, 0) + ? WHERE id = ?",
+          arguments: [added, tripID])
+      }
       var seq = (maxSeq ?? -1) + 1
       let insert = try db.makeStatement(sql: """
         INSERT INTO trip_points (tripId, seq, timestamp, latitude, longitude, accuracy)
@@ -353,19 +367,52 @@ public final class GRDBDetectionStore: DetectionStore {
   /// `RouteThinning` on the stored rows (route order = seq), inside the caller's transaction.
   static func thinRoute(tripID: Int64, maxPoints: Int, _ db: Database) throws -> RouteAppendResult {
     let ids = try Int64.fetchAll(db, sql: "SELECT id FROM trip_points WHERE tripId = ? ORDER BY seq", arguments: [tripID])
-    let (kept, thinned) = RouteThinning.thin(ids, maxCount: maxPoints)
-    if thinned {
+    let (kept, passes) = RouteThinning.thinCounting(ids, maxCount: maxPoints)
+    if passes > 0 {
       let keep = Set(kept)
       let delete = try db.makeStatement(sql: "DELETE FROM trip_points WHERE id = ?")
       for id in ids where !keep.contains(id) {
         try delete.execute(arguments: [id])
       }
     }
-    return RouteAppendResult(storedCount: kept.count, thinned: thinned)
+    return RouteAppendResult(storedCount: kept.count, thinCount: passes)
   }
 
   public func tripRoute(tripID: Int64) throws -> [RoutePoint] {
     try database().read { db in try Self.route(tripID: tripID, db) }
+  }
+
+  /// From the `seq` gap of the first two points (`RouteThinning.thinCount`).
+  public func routeThinCount(tripID: Int64) throws -> Int {
+    try database().read { db in
+      let seqs = try Int64.fetchAll(
+        db, sql: "SELECT seq FROM trip_points WHERE tripId = ? ORDER BY seq LIMIT 2", arguments: [tripID])
+      guard seqs.count == 2 else { return 0 }
+      return RouteThinning.thinCount(firstSeq: seqs[0], secondSeq: seqs[1])
+    }
+  }
+
+  /// Retention purge. Dates compare correctly as stored text (see StoreSchema).
+  @discardableResult
+  public func purgeExpiredRoutes(olderThan cutoff: Date) throws -> Int {
+    let queue = try database()
+    // Closed trips only; an open trip has no endedAt (and no status).
+    let expired = "SELECT id FROM trips WHERE status IS NOT NULL AND endedAt IS NOT NULL AND endedAt < ?"
+    // Nothing expired (the usual daily case): no write transaction at all.
+    let any = try queue.read { db in
+      try Bool.fetchOne(
+        db, sql: "SELECT EXISTS (SELECT 1 FROM trip_points WHERE tripId IN (\(expired)))", arguments: [cutoff])
+    } ?? false
+    guard any else { return 0 }
+    let deleted = try queue.write { db -> Int in
+      try db.execute(sql: "DELETE FROM trip_points WHERE tripId IN (\(expired))", arguments: [cutoff])
+      return db.changesCount
+    }
+    if deleted > 0 {
+      // Purged coordinates must not linger in the WAL (same rule as thinning / pruned parks).
+      Self.truncateWAL(queue)
+    }
+    return deleted
   }
 
   static func route(tripID: Int64, _ db: Database) throws -> [RoutePoint] {
