@@ -4,6 +4,8 @@ import { Linking } from 'react-native';
 import CarCrumbDetection, { type ParkingRecord } from './modules/carcrumb-detection';
 import { Screen } from './src/design/components';
 import { HomeScreen } from './src/features/home/HomeScreen';
+import { DIAGNOSTICS, DiagnosticsPage } from './src/features/diagnostics/DiagnosticsPage';
+import { shareTrace, useDiagnostics } from './src/features/diagnostics/useDiagnostics';
 import { useHomeData } from './src/features/home/useHomeData';
 import { walkingDirectionsUrl } from './src/features/parking/directions';
 import { markAsked } from './src/features/permissions/asked';
@@ -84,6 +86,10 @@ function Root() {
   const pushedTrips = path
     .map(tripIdFromValue)
     .flatMap((id) => history.trips.filter((t) => t.id === id));
+  // A trip on the stack that no longer exists (history deleted, beyond the list limit) would
+  // leave an empty page: drop such values from the path.
+  const knownPath = path.filter((v) => tripIdFromValue(v) === null || history.trips.some((t) => t.id === tripIdFromValue(v)));
+  if (history.loaded && knownPath.length !== path.length) setPath(knownPath);
 
   return (
     <HomeScreen
@@ -96,10 +102,12 @@ function Root() {
         path,
         onPathChange: setPath,
         historyValue: HISTORY,
+        diagnosticsValue: DIAGNOSTICS,
         destinations: (
           <>
             <HistoryPage trips={history.trips} loaded={history.loaded} />
             {/* One destination per trip on the stack (built on demand, see NavigationDestination). */}
+            {path.includes(DIAGNOSTICS) ? <PushedDiagnostics /> : null}
             {pushedTrips.map((trip) => (
               <PushedTrip key={trip.id} trip={trip} />
             ))}
@@ -113,4 +121,17 @@ function Root() {
 function PushedTrip({ trip }: { trip: Parameters<typeof TripPage>[0]['trip'] }) {
   const route = useTripRoute(trip.id, loadRoute);
   return <TripPage trip={trip} route={route} />;
+}
+
+/** Mounted only while the diagnostics page is pushed, so its 5 s polling stops on back. */
+function PushedDiagnostics() {
+  const { diagnostics, traces, refresh } = useDiagnostics();
+  return (
+    <DiagnosticsPage
+      diagnostics={diagnostics}
+      traces={traces}
+      onRefresh={refresh}
+      onShareTrace={(name) => void shareTrace(name)}
+    />
+  );
 }
