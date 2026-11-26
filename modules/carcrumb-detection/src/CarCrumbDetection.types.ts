@@ -115,12 +115,19 @@ export type TripRecord = {
   endedAt: number | null;
   status: TripStatusName;
   /**
-   * Driven distance in metres (haversine sum of the stored route), set when the trip ends.
-   * null while open and for trips without a route (e.g. begun before the first unlock after
-   * a restart, or no usable GPS).
+   * Driven distance in metres (haversine sum of the recorded route points, accumulated while
+   * driving, so it is current for an open trip too and survives route thinning / retention).
+   * null for trips without a route (e.g. begun before the first unlock after a restart, or no
+   * usable GPS yet).
    */
   distanceMeters: number | null;
 };
+
+/**
+ * How long trip routes are kept. Mirrors `RouteRetention` in Swift (ios/Store/RouteRetention.swift).
+ * After the limit only the route points are deleted; the trip (dates, duration, distance, status) stays.
+ */
+export type RouteRetention = 'threeMonths' | 'twelveMonths' | 'forever';
 
 /**
  * One point of a trip route. Mirrors `BridgeValues.routePoint` (ios/CarCrumbDetectionModule.swift).
@@ -139,6 +146,7 @@ export type RoutePoint = {
  * - ERR_STORE_UNAVAILABLE: database not readable yet (device not unlocked since restart),
  * - ERR_STORE: other read error,
  * - ERR_DELETE_HISTORY: deleteAllHistory failed; the message is the failed step
- *   ('database' | 'stateFile' | 'geofence' | 'traces').
+ *   ('database' | 'stateFile' | 'geofence' | 'traces'),
+ * - ERR_INVALID_ARGUMENT: setRouteRetention got an unknown value.
  */
-export type HistoryErrorCode = 'ERR_STORE_UNAVAILABLE' | 'ERR_STORE' | 'ERR_DELETE_HISTORY';
+export type HistoryErrorCode = 'ERR_STORE_UNAVAILABLE' | 'ERR_STORE' | 'ERR_DELETE_HISTORY' | 'ERR_INVALID_ARGUMENT';
