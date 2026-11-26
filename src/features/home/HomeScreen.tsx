@@ -4,7 +4,20 @@
  * render it with synthetic data.
  */
 import type { ParkingRecord } from '../../../modules/carcrumb-detection';
-import { InfoRow, PrimaryButton, Screen, SecondaryButton, Section, StatusLabel, TimeRow, Txt } from '../../design/components';
+import type { ReactNode } from 'react';
+
+import {
+  InfoRow,
+  NavLabel,
+  NavRow,
+  PrimaryButton,
+  Screen,
+  SecondaryButton,
+  Section,
+  StatusLabel,
+  TimeRow,
+  Txt,
+} from '../../design/components';
 import { statePresentation } from '../detection/presentation';
 import { confidenceCopy } from '../parking/presentation';
 import { isLocationOff, needsAlwaysInSettings } from '../permissions/flow';
@@ -17,7 +30,23 @@ export type HomeActions = {
 
 const DIRECTIONS_NOTE = 'Yürüyüş rotası için park konumu yalnızca dokunduğunda Apple Haritalar’a aktarılır.';
 
-export function HomeScreen({ data, actions }: { data: HomeData; actions: HomeActions }) {
+/** Drill-down pages (history, trip detail) pushed from the home screen. */
+export type HomeNavigation = {
+  path: string[];
+  onPathChange: (path: string[]) => void;
+  destinations: ReactNode;
+  historyValue: string;
+};
+
+export function HomeScreen({
+  data,
+  actions,
+  navigation,
+}: {
+  data: HomeData;
+  actions: HomeActions;
+  navigation?: HomeNavigation;
+}) {
   const location = data.diagnostics?.location;
   const locationOff = location ? isLocationOff(location.authorization, location.servicesEnabled) : false;
   const alwaysInSettings = location ? needsAlwaysInSettings(location.authorization, data.alwaysAsked, location.servicesEnabled) : false;
@@ -26,7 +55,11 @@ export function HomeScreen({ data, actions }: { data: HomeData; actions: HomeAct
   const state = statePresentation[data.state];
 
   return (
-    <Screen title="CarCrumb">
+    <Screen
+      title="CarCrumb"
+      path={navigation?.path}
+      onPathChange={navigation?.onPathChange}
+      destinations={navigation?.destinations}>
       {locationOff ? (
         <Section title="Konum kapalı" footer="Kayıtlı park yerin ve geçmişin görünmeye devam eder.">
           <StatusLabel title="Otomatik kayıt kapalı" iconName="locationOff" tone="uncertain" />
@@ -74,6 +107,14 @@ export function HomeScreen({ data, actions }: { data: HomeData; actions: HomeAct
             her zaman erişim gerekiyor.
           </Txt>
           <PrimaryButton label="Ayarları aç" iconName="settings" onPress={actions.onOpenSettings} />
+        </Section>
+      ) : null}
+
+      {navigation ? (
+        <Section title="Geçmiş">
+          <NavRow value={navigation.historyValue}>
+            <NavLabel title="Yolculuklar" iconName="history" />
+          </NavRow>
         </Section>
       ) : null}
 

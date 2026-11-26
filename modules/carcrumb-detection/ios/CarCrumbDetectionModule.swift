@@ -2,7 +2,8 @@ import ExpoModulesCore
 
 // Bridge only. Detection runs in Swift (DetectionEngine) even when JS is not loaded
 // (background wake, started by DetectionAppDelegateSubscriber). JS listens to events and
-// queries state/diagnostics. Nothing returned here contains coordinates.
+// queries state/diagnostics. Only the history reads (parks, trip routes) return
+// coordinates, for display; nothing here logs them.
 //
 // Keep in sync with src/CarCrumbDetection.types.ts and src/CarCrumbDetectionModule.ts.
 public class CarCrumbDetectionModule: Module {
@@ -99,6 +100,23 @@ public class CarCrumbDetectionModule: Module {
       }
     }
 
+    /// Route of one trip in route order ([] for an unknown trip, a trip without route, or a
+    /// `tripId` that is not a non-negative integer). Contains raw coordinates: display only,
+    /// never logged on either side.
+    AsyncFunction("getTripRoute") { (tripId: Double, promise: Promise) in
+      guard tripId.isFinite, tripId >= 0, tripId.rounded() == tripId, tripId < 9_007_199_254_740_992 else {
+        promise.resolve([[String: Any]]())
+        return
+      }
+      let id = Int64(tripId)
+      DetectionEngine.shared.readStore({ try $0.tripRoute(tripID: id) }) { result in
+        switch result {
+        case let .success(points): promise.resolve(points.map(BridgeValues.routePoint))
+        case let .failure(error): BridgeValues.reject(promise, error)
+        }
+      }
+    }
+
     /// Deletes all history (docs/DECISIONS.md checklist, see DetectionEngine.deleteAllHistory).
     /// Resolves after the CLMonitor park condition is confirmed removed. Rejects with
     /// ERR_DELETE_HISTORY and the failed step ("database" | "stateFile" | "geofence" | "traces").
@@ -146,6 +164,15 @@ enum BridgeValues {
       "endedAt": t.endedAt.map { ms($0) as Any } ?? NSNull(),
       "status": t.status?.rawValue ?? "open",
       "distanceMeters": t.distanceMeters.map { $0 as Any } ?? NSNull(),
+    ]
+  }
+
+  /// Raw coordinates: display only, never logged. Keep in sync with `RoutePoint` (TS).
+  static func routePoint(_ p: RoutePoint) -> [String: Any] {
+    [
+      "latitude": p.latitude,
+      "longitude": p.longitude,
+      "timestamp": ms(p.timestamp),
     ]
   }
 

@@ -76,7 +76,9 @@ Trafikte duran araç "Olası park"tan "Sürüş"e geri döner; park ancak yürü
 - **Durum geri yükleme:** Olası parkta kalmış ve araç bağlantısı olan yolculuk, geri yüklemede süresi ne olursa olsun düşük güvenli park olarak kapanır.
 - **Kurtarma:** Uygulama uzun süre uyanamadıysa, açılışta 7 günlük hareket geçmişinden kaçırılan yolculuklar rotasız, "kurtarılan" etiketiyle çıkarılır.
 
-**Geçmişi silme kontrol listesi:** SQLite satırları + `VACUUM` + WAL checkpoint, motor durum dosyası (`state.json`) silinip motor IDLE'a alınır, CLMonitor park koşulu kaldırılır, debug kayıt dizini (`traces/`) silinir.
+**Geçmişi silme kontrol listesi:** SQLite satırları (rota noktaları `trip_points` dahil) + `VACUUM` + WAL checkpoint, motor durum dosyası (`state.json`) silinip motor IDLE'a alınır, CLMonitor park koşulu kaldırılır, debug kayıt dizini (`traces/`) silinir.
+
+**Rota kaydı (26 Kasım 2026):** Yalnızca sürüş (DRIVING) sırasında, araç hızındaki (> 2,5 m/s) ve doğruluğu ≤ 30 m olan noktalar; son noktadan ≥ 25 m ya da ≥ 15 sn. Yolculuk başına en fazla 5000 nokta (aşılınca eşit seyreltilir). Mesafe, yolculuk bitince bu noktaların haversine toplamıdır. Kilitli cihazda (yeniden başlatma sonrası, kilit açılmadan) başlayan yolculuk rotasız kaydedilir. Rota yalnızca cihazda tutulur ve çizilir.
 
 ## Teknik kararlar
 
@@ -183,5 +185,5 @@ Açık sorular:
 - [ ] Pro fiyatı ve Türkiye yerelleştirmesi
 - [ ] Durma eşiğinin varsayılan değeri (saha verisiyle belirlenecek)
 - [ ] Park geofence yarıçapı (öneri ~150 m, sahada doğrulanacak)
-- [ ] Harita: Apple MapKit mi, başka bir çözüm mü
+- [x] Harita: Apple MapKit, `expo-maps` ile (26 Kasım 2026). Ücretsiz, API anahtarı yok; rota çizgisi cihazda çizilir, CarCrumb rota noktalarını hiçbir sunucuya göndermez. Harita gösterilirken MapKit görünen bölgenin karolarını Apple'dan ister (Apple Haritalar kullanımıyla aynı; Apple çerçevesi olduğu için "Data Not Collected" beyanını değiştirmez). Google Maps SDK gizlilik etiketini değiştireceği için seçilmedi.
 - [ ] Test için kullanılacak iPhone ve iOS sürümleri

@@ -58,7 +58,8 @@
             "deploymentTarget": "18.0"
           }
         }
-      ]
+      ],
+      "expo-maps"
     ]
   }
 }

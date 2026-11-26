@@ -9,6 +9,7 @@ jest.mock('react-native', () => ({ Settings: { get: (key: string) => mockSetting
 
 // Keep the SwiftUI components out of the test: only the launch-argument logic is under test.
 jest.mock('../../../design/components', () => ({}));
+jest.mock('../../../design/RouteMap', () => ({}));
 
 const ENV = 'EXPO_PUBLIC_PREVIEW';
 const originalEnv = process.env[ENV];

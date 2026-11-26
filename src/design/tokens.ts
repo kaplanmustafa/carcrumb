@@ -56,6 +56,12 @@ export const space = {
   xxl: 32,
 } as const;
 
+/** Fixed heights for embedded native views (points). */
+export const size = {
+  mapCompact: 220,
+  map: 320,
+} as const;
+
 /** Corner radii (points). SwiftUI draws them as continuous corners. */
 export const radius = {
   s: 8,

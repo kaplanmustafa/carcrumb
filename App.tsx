@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { Linking } from 'react-native';
 
 import CarCrumbDetection, { type ParkingRecord } from './modules/carcrumb-detection';
@@ -10,6 +10,8 @@ import { markAsked } from './src/features/permissions/asked';
 import { nextOnboardingStep } from './src/features/permissions/flow';
 import { OnboardingScreen } from './src/features/permissions/OnboardingScreen';
 import { DesignPreview, requestedPreview } from './src/features/preview/DesignPreview';
+import { HISTORY, HistoryPage, TripPage, tripIdFromValue } from './src/features/trips/TripScreens';
+import { useTripRoute, useTrips } from './src/features/trips/useTrips';
 
 export default function App() {
   const preview = requestedPreview();
@@ -20,8 +22,12 @@ export default function App() {
 /** A system dialog that never reports back must not leave the screen hanging. */
 const DIALOG_TIMEOUT_MS = 30_000;
 
+const loadRoute = (tripId: number) => CarCrumbDetection.getTripRoute(tripId);
+
 function Root() {
   const { data, refresh } = useHomeData();
+  const history = useTrips();
+  const [path, setPath] = useState<string[]>([]);
 
   const request = useCallback(
     (fn: () => Promise<unknown>, after?: () => void) => () => {
@@ -75,6 +81,10 @@ function Root() {
     );
   }
 
+  const pushedTrips = path
+    .map(tripIdFromValue)
+    .flatMap((id) => history.trips.filter((t) => t.id === id));
+
   return (
     <HomeScreen
       data={data}
@@ -82,6 +92,25 @@ function Root() {
         onDirections,
         onOpenSettings: () => void Linking.openSettings().catch(() => undefined),
       }}
+      navigation={{
+        path,
+        onPathChange: setPath,
+        historyValue: HISTORY,
+        destinations: (
+          <>
+            <HistoryPage trips={history.trips} loaded={history.loaded} />
+            {/* One destination per trip on the stack (built on demand, see NavigationDestination). */}
+            {pushedTrips.map((trip) => (
+              <PushedTrip key={trip.id} trip={trip} />
+            ))}
+          </>
+        ),
+      }}
     />
   );
+}
+
+function PushedTrip({ trip }: { trip: Parameters<typeof TripPage>[0]['trip'] }) {
+  const route = useTripRoute(trip.id, loadRoute);
+  return <TripPage trip={trip} route={route} />;
 }

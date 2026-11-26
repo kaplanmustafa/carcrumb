@@ -114,8 +114,24 @@ export type TripRecord = {
   /** Milliseconds since 1970; null while the trip is open. */
   endedAt: number | null;
   status: TripStatusName;
-  /** null until route recording exists. */
+  /**
+   * Driven distance in metres (haversine sum of the stored route), set when the trip ends.
+   * null while open and for trips without a route (e.g. begun before the first unlock after
+   * a restart, or no usable GPS).
+   */
   distanceMeters: number | null;
+};
+
+/**
+ * One point of a trip route. Mirrors `BridgeValues.routePoint` (ios/CarCrumbDetectionModule.swift).
+ * Contains raw coordinates: use them for drawing the route only, never log them
+ * (no console.log, no error reports) and never send them over the network.
+ */
+export type RoutePoint = {
+  latitude: number;
+  longitude: number;
+  /** Fix time, milliseconds since 1970 (`new Date(timestamp)`). */
+  timestamp: number;
 };
 
 /**

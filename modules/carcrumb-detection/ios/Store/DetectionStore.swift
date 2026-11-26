@@ -22,6 +22,8 @@ public protocol DetectionStore: AnyObject {
   /// Corrects the start from Core Motion history (DriveStartEstimator). Only moves it earlier.
   /// Ignored if the trip is gone.
   func refineTripStart(tripID: Int64, startedAt: Date) throws
+  /// Closes the trip. Also sets `distanceMeters` from the stored route (`RouteDistance`,
+  /// nil without a route); flush pending route points before calling it.
   func endTrip(tripID: Int64?, status: TripStatus, endedAt: Date) throws
   /// Writes a whole, already closed trip in one go. Used when `beginTrip` could not write
   /// (database unavailable before the first unlock), so the trip is not lost.
@@ -40,6 +42,20 @@ public protocol DetectionStore: AnyObject {
   /// (`tripId = NULL`): an uncertain trip has no park (rule 1).
   func abandonOpenTrips(except tripID: Int64?) throws
 
+  // MARK: Route (RouteSampling.swift)
+
+  /// Appends route points (route order, oldest first) to an existing trip in ONE transaction
+  /// (the engine batches them, see `RouteSampler`). If the trip then has more than
+  /// `maxPoints` points, its route is thinned in the same transaction (`RouteThinning`).
+  /// Unknown trip: nothing written. Never buffered: while the database is unavailable this
+  /// throws `.unavailable` and the points are lost (route recording is best effort; a trip
+  /// begun before the first unlock has no trip row and therefore no route, see
+  /// `DetectionEngine`).
+  @discardableResult
+  func appendRoutePoints(_ points: [RoutePoint], tripID: Int64, maxPoints: Int) throws -> RouteAppendResult
+  /// The trip's route in route order (empty if none / unknown trip). Contains raw coordinates.
+  func tripRoute(tripID: Int64) throws -> [RoutePoint]
+
   // MARK: Reads (JS bridge)
 
   /// The current park ("Arabam nerede"): the newest written row (see `ParkingPolicy`).
@@ -51,7 +67,7 @@ public protocol DetectionStore: AnyObject {
   func trips(limit: Int) throws -> [StoredTrip]
 
   /// History deletion, store part (docs/DECISIONS.md, "Geçmişi silme kontrol listesi"):
-  /// all rows, then `VACUUM`, then WAL checkpoint(TRUNCATE). Also drops writes buffered while
+  /// all rows (route points included), then `VACUUM`, then WAL checkpoint(TRUNCATE). Also drops writes buffered while
   /// the database was unavailable.
   func deleteAllHistory() throws
 }
@@ -81,7 +97,9 @@ public struct StoredTrip: Equatable, Codable, Sendable {
   public var endedAt: Date?
   /// nil while the trip is open.
   public var status: StoredTripStatus?
-  /// Driven distance in metres. nil until route recording exists (later step).
+  /// Driven distance in metres: haversine sum of the stored route, set at `endTrip`. nil while
+  /// open and for trips without a route (fewer than 2 points: database locked at the start,
+  /// no usable GPS, `saveClosedTrip`, abandoned trips).
   public var distanceMeters: Double?
 
   public init(
@@ -161,6 +179,8 @@ public final class InMemoryDetectionStore: DetectionStore {
   public private(set) var tripRows: [StoredTrip] = []
   /// Unordered; read through `recentParkings()`.
   public private(set) var parkingRows: [StoredParking] = []
+  /// Route points per trip id, route order.
+  public private(set) var routeRows: [Int64: [RoutePoint]] = [:]
   private var nextTripID: Int64 = 1
   private var nextParkingID: Int64 = 1
 
@@ -182,6 +202,7 @@ public final class InMemoryDetectionStore: DetectionStore {
     guard let tripID, let i = tripRows.firstIndex(where: { $0.id == tripID }) else { return }
     tripRows[i].endedAt = endedAt
     tripRows[i].status = StoredTripStatus(status)
+    tripRows[i].distanceMeters = RouteDistance.meters(routeRows[tripID] ?? [])
   }
 
   public func saveClosedTrip(startedAt: Date, detectedAt: Date, endedAt: Date, status: TripStatus) throws -> Int64 {
@@ -228,6 +249,18 @@ public final class InMemoryDetectionStore: DetectionStore {
     }
   }
 
+  @discardableResult
+  public func appendRoutePoints(_ points: [RoutePoint], tripID: Int64, maxPoints: Int) throws -> RouteAppendResult {
+    guard tripRows.contains(where: { $0.id == tripID }) else { return RouteAppendResult(storedCount: 0, thinned: false) }
+    let (route, thinned) = RouteThinning.thin((routeRows[tripID] ?? []) + points, maxCount: maxPoints)
+    routeRows[tripID] = route
+    return RouteAppendResult(storedCount: route.count, thinned: thinned)
+  }
+
+  public func tripRoute(tripID: Int64) throws -> [RoutePoint] {
+    routeRows[tripID] ?? []
+  }
+
   public func lastParking() throws -> StoredParking? {
     try recentParkings().first
   }
@@ -243,6 +276,7 @@ public final class InMemoryDetectionStore: DetectionStore {
   public func deleteAllHistory() throws {
     tripRows.removeAll()
     parkingRows.removeAll()
+    routeRows.removeAll()
     // Ids keep increasing (same as SQLite AUTOINCREMENT).
   }
 
