@@ -38,11 +38,11 @@ final class RouteRetentionPolicyTests: XCTestCase {
 
   func testCutoffIsCalendarMonths() {
     let now = utc(2026, 11, 26)
-    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: now), utc(2026, 8, 26))
-    XCTAssertEqual(RouteRetention.twelveMonths.cutoff(now: now), utc(2025, 11, 26))
+    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: now), utc(2026, 8, 26, 0))
+    XCTAssertEqual(RouteRetention.twelveMonths.cutoff(now: now), utc(2025, 11, 26, 0))
     XCTAssertNil(RouteRetention.forever.cutoff(now: now), "forever: nothing is ever purged")
     // Month end: 31 May - 3 months is the last day of February.
-    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2026, 5, 31)), utc(2026, 2, 28))
+    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2026, 5, 31)), utc(2026, 2, 28, 0))
   }
 
   func testPurgeScheduleAtMostOnceADay() {

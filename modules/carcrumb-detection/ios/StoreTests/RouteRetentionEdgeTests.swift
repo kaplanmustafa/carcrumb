@@ -18,15 +18,15 @@ private let day: TimeInterval = 24 * 60 * 60
 final class RouteRetentionCutoffEdgeTests: XCTestCase {
   func testLeapDayAndMonthEnds() {
     // Leap year 2028.
-    XCTAssertEqual(RouteRetention.twelveMonths.cutoff(now: utc(2028, 2, 29)), utc(2027, 2, 28), "29 Feb - 12 months")
-    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2028, 5, 29)), utc(2028, 2, 29), "lands on the leap day")
-    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2028, 5, 31)), utc(2028, 2, 29), "clamped to the leap day")
-    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2027, 5, 31)), utc(2027, 2, 28))
-    XCTAssertEqual(RouteRetention.twelveMonths.cutoff(now: utc(2029, 2, 28)), utc(2028, 2, 28))
+    XCTAssertEqual(RouteRetention.twelveMonths.cutoff(now: utc(2028, 2, 29)), utc(2027, 2, 28, 0), "29 Feb - 12 months")
+    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2028, 5, 29)), utc(2028, 2, 29, 0), "lands on the leap day")
+    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2028, 5, 31)), utc(2028, 2, 29, 0), "clamped to the leap day")
+    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2027, 5, 31)), utc(2027, 2, 28, 0))
+    XCTAssertEqual(RouteRetention.twelveMonths.cutoff(now: utc(2029, 2, 28)), utc(2028, 2, 28, 0))
     // 31-day month into a 30-day one, and across the year boundary.
-    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2026, 12, 31)), utc(2026, 9, 30))
-    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2027, 1, 15, 0, 30)), utc(2026, 10, 15), "rounded to the UTC day")
-    XCTAssertEqual(RouteRetention.twelveMonths.cutoff(now: utc(2026, 12, 31, 23, 59)), utc(2025, 12, 31), "rounded to the UTC day")
+    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2026, 12, 31)), utc(2026, 9, 30, 0))
+    XCTAssertEqual(RouteRetention.threeMonths.cutoff(now: utc(2027, 1, 15, 0, 30)), utc(2026, 10, 15, 0), "rounded to the UTC day")
+    XCTAssertEqual(RouteRetention.twelveMonths.cutoff(now: utc(2026, 12, 31, 23, 59)), utc(2025, 12, 31, 0), "rounded to the UTC day")
   }
 
   /// Moving `now` forward never moves the limit backward (no route that was already purged
@@ -55,7 +55,7 @@ final class RouteRetentionCutoffEdgeTests: XCTestCase {
       NSTimeZone.default = TimeZone(identifier: id)!
       results.insert(RouteRetention.threeMonths.cutoff(now: instant)!)
     }
-    XCTAssertEqual(results, [utc(2025, 12, 1)])
+    XCTAssertEqual(results, [utc(2025, 12, 1, 0)])
   }
 }
 
