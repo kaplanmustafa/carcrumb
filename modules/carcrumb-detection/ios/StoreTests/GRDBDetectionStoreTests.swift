@@ -54,7 +54,7 @@ final class GRDBDetectionStoreTests: TemporaryDirectoryTestCase {
       XCTAssertEqual(tripColumns, ["id", "startedAt", "detectedAt", "endedAt", "status", "distanceMeters"])
       let parkingColumns = Set(try db.columns(in: "parkings").map(\.name))
       XCTAssertEqual(parkingColumns, ["id", "tripId", "latitude", "longitude", "accuracy", "confidence", "parkedAt", "fixAt"])
-      XCTAssertEqual(try StoreSchema.migrator.appliedIdentifiers(db), ["v1_trips_parkings"])
+      XCTAssertEqual(try StoreSchema.migrator.appliedIdentifiers(db), ["v1_trips_parkings", "v2_trip_points"])
       XCTAssertEqual(try Int.fetchOne(db, sql: "PRAGMA foreign_keys"), 1)
     }
     XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("carcrumb.sqlite").path))

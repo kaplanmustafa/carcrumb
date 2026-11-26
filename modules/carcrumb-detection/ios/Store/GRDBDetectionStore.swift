@@ -6,6 +6,7 @@ import CarCrumbDetection
 
 extension StoredTrip: FetchableRecord {}
 extension StoredParking: FetchableRecord {}
+extension RoutePoint: FetchableRecord {}
 
 /// Trips and parking in SQLite (GRDB), `Application Support/CarCrumb/carcrumb.sqlite`.
 ///
@@ -16,7 +17,9 @@ extension StoredParking: FetchableRecord {}
 /// single serialized connection keeps the single-writer rule structural (no second
 /// connection can exist in the process), uses one file handle, and makes `VACUUM` and
 /// `checkpoint(TRUNCATE)` deterministic (a pool reader holding a WAL snapshot would make
-/// TRUNCATE return BUSY). Writes are tiny and rare (a few per trip).
+/// TRUNCATE return BUSY). Writes are small and rare: a few per trip, plus one route batch
+/// (≤ `RouteSamplingConfig.flushBatchSize` points, one transaction) about once a minute while
+/// driving.
 ///
 /// ## WAL
 /// Enabled per connection in `prepareDatabase` (docs/DECISIONS.md: "SQLite (GRDB, WAL)").
@@ -39,6 +42,9 @@ extension StoredParking: FetchableRecord {}
 /// with the same rules, right after the first successful open. Buffered calls throw
 /// `.unavailable` (except `saveClosedTrip`, which returns a provisional id) so the engine knows
 /// the write is deferred. Buffered writes are lost if the process dies first.
+/// Route points are the exception: `appendRoutePoints` is never buffered (a trip that began
+/// while locked has no trip row, so the engine records no route for it; the trip itself is
+/// still written by `saveClosedTrip`, "rotasız", with `distanceMeters = NULL`).
 ///
 /// Threading: not thread-safe by itself; confined to the engine queue (see `DetectionStore`).
 /// Privacy: no logging here at all; coordinates only go to SQLite.
@@ -179,9 +185,11 @@ public final class GRDBDetectionStore: DetectionStore {
         arguments: [startedAt, tripID, startedAt])
       return nil
     case let .end(tripID, status, endedAt):
+      // Distance from the stored route, in the same transaction as the close.
+      let distance = try RouteDistance.meters(Self.route(tripID: tripID, db))
       try db.execute(
-        sql: "UPDATE trips SET endedAt = ?, status = ? WHERE id = ?",
-        arguments: [endedAt, StoredTripStatus(status).rawValue, tripID])
+        sql: "UPDATE trips SET endedAt = ?, status = ?, distanceMeters = ? WHERE id = ?",
+        arguments: [endedAt, StoredTripStatus(status).rawValue, distance, tripID])
       return nil
     case let .closedTrip(provisionalID, startedAt, detectedAt, endedAt, status):
       provisionalTripIDs[provisionalID] = try Self.insertClosedTrip(
@@ -313,6 +321,59 @@ public final class GRDBDetectionStore: DetectionStore {
     }
   }
 
+  // MARK: Route
+
+  @discardableResult
+  public func appendRoutePoints(_ points: [RoutePoint], tripID: Int64, maxPoints: Int) throws -> RouteAppendResult {
+    // Not `perform`: route points are never buffered (see the type doc).
+    let queue = try database()
+    let result = try queue.write { db -> RouteAppendResult in
+      guard try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM trips WHERE id = ?)", arguments: [tripID]) == true else {
+        return RouteAppendResult(storedCount: 0, thinned: false) // deleted / unknown trip
+      }
+      let maxSeq = try Int64.fetchOne(db, sql: "SELECT MAX(seq) FROM trip_points WHERE tripId = ?", arguments: [tripID])
+      var seq = (maxSeq ?? -1) + 1
+      let insert = try db.makeStatement(sql: """
+        INSERT INTO trip_points (tripId, seq, timestamp, latitude, longitude, accuracy)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """)
+      for point in points {
+        try insert.execute(arguments: [tripID, seq, point.timestamp, point.latitude, point.longitude, point.accuracy])
+        seq += 1
+      }
+      return try Self.thinRoute(tripID: tripID, maxPoints: maxPoints, db)
+    }
+    if result.thinned {
+      // Thinned-out coordinates must not linger in the WAL (same rule as pruned parks).
+      Self.truncateWAL(queue)
+    }
+    return result
+  }
+
+  /// `RouteThinning` on the stored rows (route order = seq), inside the caller's transaction.
+  static func thinRoute(tripID: Int64, maxPoints: Int, _ db: Database) throws -> RouteAppendResult {
+    let ids = try Int64.fetchAll(db, sql: "SELECT id FROM trip_points WHERE tripId = ? ORDER BY seq", arguments: [tripID])
+    let (kept, thinned) = RouteThinning.thin(ids, maxCount: maxPoints)
+    if thinned {
+      let keep = Set(kept)
+      let delete = try db.makeStatement(sql: "DELETE FROM trip_points WHERE id = ?")
+      for id in ids where !keep.contains(id) {
+        try delete.execute(arguments: [id])
+      }
+    }
+    return RouteAppendResult(storedCount: kept.count, thinned: thinned)
+  }
+
+  public func tripRoute(tripID: Int64) throws -> [RoutePoint] {
+    try database().read { db in try Self.route(tripID: tripID, db) }
+  }
+
+  static func route(tripID: Int64, _ db: Database) throws -> [RoutePoint] {
+    try RoutePoint.fetchAll(
+      db, sql: "SELECT latitude, longitude, accuracy, timestamp FROM trip_points WHERE tripId = ? ORDER BY seq",
+      arguments: [tripID])
+  }
+
   // MARK: DetectionStore (reads)
 
   public func lastParking() throws -> StoredParking? {
@@ -348,6 +409,9 @@ public final class GRDBDetectionStore: DetectionStore {
     provisionalTripIDs.removeAll()
     let queue = try database()
     try queue.write { db in
+      // trip_points would also go with the trips (ON DELETE CASCADE); deleted explicitly so
+      // the step does not depend on the foreign-key setting of the connection.
+      try db.execute(sql: "DELETE FROM trip_points")
       try db.execute(sql: "DELETE FROM parkings")
       try db.execute(sql: "DELETE FROM trips")
     }

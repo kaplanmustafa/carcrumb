@@ -108,7 +108,7 @@ final class GRDBStoreEdgeCaseTests: TemporaryDirectoryTestCase {
     try StoreSchema.migrator.migrate(other)
     try StoreSchema.migrator.migrate(other)
     try other.read { db in
-      XCTAssertEqual(try StoreSchema.migrator.appliedIdentifiers(db), ["v1_trips_parkings"])
+      XCTAssertEqual(try StoreSchema.migrator.appliedIdentifiers(db), ["v1_trips_parkings", "v2_trip_points"])
       XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM trips"), 1)
       XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM parkings"), 1)
       XCTAssertTrue(try StoreSchema.migrator.hasCompletedMigrations(db))
@@ -119,7 +119,7 @@ final class GRDBStoreEdgeCaseTests: TemporaryDirectoryTestCase {
     XCTAssertEqual(try reopened.lastParking()?.tripID, trip)
     XCTAssertGreaterThan(try reopened.beginTrip(startedAt: StoreFixtures.date(1000)), trip)
     try reopened.read { db in
-      XCTAssertEqual(try StoreSchema.migrator.appliedIdentifiers(db), ["v1_trips_parkings"])
+      XCTAssertEqual(try StoreSchema.migrator.appliedIdentifiers(db), ["v1_trips_parkings", "v2_trip_points"])
     }
   }
 

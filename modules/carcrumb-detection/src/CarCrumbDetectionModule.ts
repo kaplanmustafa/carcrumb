@@ -7,6 +7,7 @@ import type {
   LocationAuthorization,
   MotionAuthorization,
   ParkingRecord,
+  RoutePoint,
   TripRecord,
 } from './CarCrumbDetection.types';
 
@@ -36,6 +37,13 @@ declare class CarCrumbDetectionModule extends NativeModule<CarCrumbDetectionModu
    * clamped to 1...500 (NaN / Infinity → 50).
    */
   listTrips(limit: number): Promise<TripRecord[]>;
+  /**
+   * Route of one trip (`TripRecord.id`), in driving order. [] for an unknown trip, a trip
+   * without route, or an id that is not a non-negative integer. Only points driven at vehicle
+   * speed with good accuracy are stored (roughly every 25 m), so the line is an approximation.
+   * Contains coordinates: never log the result. Rejects like listTrips.
+   */
+  getTripRoute(tripId: number): Promise<RoutePoint[]>;
   /**
    * Deletes all history: database rows (+ VACUUM, WAL truncate), engine state (back to IDLE),
    * the park geofence (resolves only after its removal is confirmed; without location
