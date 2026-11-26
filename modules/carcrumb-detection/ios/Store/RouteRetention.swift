@@ -18,7 +18,9 @@ public enum RouteRetention: String, CaseIterable, Sendable {
 
   /// Trips that ended before this instant lose their route; nil = keep forever.
   /// Calendar months (Gregorian, UTC: independent of the device time zone, so the same
-  /// instant always gives the same limit), not a fixed number of days.
+  /// instant always gives the same limit), not a fixed number of days, rounded down to the
+  /// start of that UTC day. The rounding keeps the limit monotonic: month-end clamping
+  /// (31 May → 28/29 Feb) would otherwise make it step back by hours as `now` advances.
   public func cutoff(now: Date) -> Date? {
     let months: Int
     switch self {
@@ -28,7 +30,7 @@ public enum RouteRetention: String, CaseIterable, Sendable {
     }
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "UTC")!
-    return calendar.date(byAdding: .month, value: -months, to: now)
+    return calendar.date(byAdding: .month, value: -months, to: now).map { calendar.startOfDay(for: $0) }
   }
 }
 
